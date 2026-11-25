@@ -16,6 +16,11 @@ function sameColor(a: Color.PlainColorObject, b: Color.PlainColorObject): boolea
     return true;
 }
 
+function formatASSNumber(n: number): string {
+    const rounded = Math.round(n * 1000) / 1000;
+    return Object.is(rounded, -0) ? '0' : String(rounded);
+}
+
 export type ASSStringWarnings = {
     ignoredTags: Map<string, number>,
     ignoredDrawing: number,
@@ -108,7 +113,7 @@ class ASSState extends Formatter {
 
     emitGlobals(): string {
         let result = '';
-        if (this.#pos) result += `\\pos(${this.#pos.x.toFixed(0)}, ${this.#pos.y.toFixed(0)})`;
+        if (this.#pos) result += `\\pos(${formatASSNumber(this.#pos.x)}, ${formatASSNumber(this.#pos.y)})`;
         if (this.#align) result += `\\an${this.#align}`;
 
         return result.length > 0 ? `{${result}}` : '';
@@ -125,7 +130,7 @@ class ASSState extends Formatter {
             const f0 = before.#fontsize == base.size ? undefined : before.#fontsize;
             const f1 = after.#fontsize == base.size ? undefined : after.#fontsize;
             if (f0 !== f1)
-                result += `\\fs${f1 ? f1.toFixed(0) : ''}`;
+                result += `\\fs${f1 ? formatASSNumber(f1) : ''}`;
         }
 
         const fn0 = base && before.#font === base.font ? undefined : before.#font;
@@ -203,8 +208,8 @@ class ASSState extends Formatter {
             else if ((m = /^u\s*(1|0)?$/.exec(s)))  this._underline = m[1] == '1';
             else if ((m = /^s\s*(1|0)?$/.exec(s)))  this._strikethrough = m[1] == '1';
             else if ((m = /^b\s*(\d+)?$/.exec(s)))  this._bold = Number.parseInt(m[1] ?? '0');
-            else if ((m = /^fs\s*(\d+)?$/.exec(s)))
-                this.#fontsize = m[1] ? Number.parseInt(m[1]) : undefined;
+            else if ((m = /^fs\s*(\d+(?:\.\d+)?)?$/.exec(s)))
+                this.#fontsize = m[1] ? Number.parseFloat(m[1]) : undefined;
             else if ((m = /^fn\s*(.*)$/.exec(s))) {
                 const fontName = m[1].trim();
                 this.#font = fontName.length > 0 ? fontName : undefined;
@@ -223,11 +228,11 @@ class ASSState extends Formatter {
                     }
                 }
             }
-            else if ((m = /pos\((\d+),(\d+)\)/.exec(s)))
+            else if ((m = /^pos\(\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*\)$/.exec(s)))
                 this.#pos = {
                     type: 'absolute',
-                    x: Number.parseInt(m[1]),
-                    y: Number.parseInt(m[2])
+                    x: Number.parseFloat(m[1]),
+                    y: Number.parseFloat(m[2])
                 };
             else if ((m = /an([1-9])/.exec(s)))
                 this.#align = Number.parseInt(m[1]);
