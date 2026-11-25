@@ -80,8 +80,8 @@ export class MediaPlayer {
             if (!this.#presenting) void this.#startPresenting();
             MediaPlayerInterface.onPlayback.dispatch(t);
         });
-        void this.#updateOutputSize();
-        void this.#startPresenting();
+        void this.#updateOutputSize().catch((e) => Debug.forwardError(e));
+        void this.#startPresenting().catch((e) => Debug.forwardError(e));
 
         MediaPlayerInterface.getLatencies = () => this.#diag.latencies;
     }
@@ -223,7 +223,7 @@ export class MediaPlayer {
     }
 
     async #presentNextLocked() {
-        if (this.#intent === 'closed') return -1;
+        if (this.#intent === 'closed' || this.#buffer.state === 'error') return -1;
 
         // if not playing, just display the current frame
         if (!this.isPlaying) {

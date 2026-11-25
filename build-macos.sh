@@ -36,5 +36,24 @@ fi
 
 export FFMPEG_SOURCE_PATH="${FFMPEG_SOURCE}"
 
+# Wrap `gcc` (FFmpeg's default compiler when target == host) so `-march=native`
+# on newer Apple Silicon Macs (M2+) does not bake FEAT_I8MM into C code and crash on M1.
+CC_WRAPPER_DIR="$(mktemp -d)"
+trap 'rm -rf "${CC_WRAPPER_DIR}"' EXIT
+cat > "${CC_WRAPPER_DIR}/gcc" <<'EOF'
+#!/usr/bin/env bash
+args=()
+for arg in "$@"; do
+    case "$arg" in
+        -march=native) args+=("-mcpu=apple-m1") ;;
+        -mtune=native) ;;
+        *) args+=("$arg") ;;
+    esac
+done
+exec /usr/bin/clang "${args[@]}"
+EOF
+chmod +x "${CC_WRAPPER_DIR}/gcc"
+export PATH="${CC_WRAPPER_DIR}:${PATH}"
+
 cargo tauri build --target universal-apple-darwin --bundles app
 bash "${SCRIPT_DIR}/mac-repack-test.sh"

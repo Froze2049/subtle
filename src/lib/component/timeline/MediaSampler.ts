@@ -27,6 +27,7 @@ export class MediaSampler {
     #cancelling = false;
 
     #sampling = false;
+    #failed = false;
     #mutex = new Mutex(1000, 'MediaSampler');
 
     #eofTimestamp = -1;
@@ -103,6 +104,7 @@ export class MediaSampler {
         await this.#mutex.use(async () => {
             await this.media.openAudioSampler(id, this.resolution);
             this.#intensity.clear();
+            this.#failed = false;
         });
     }
 
@@ -128,7 +130,7 @@ export class MediaSampler {
 
     async startSampling(from: number, to: number): Promise<void> {
         Debug.assert(!this.media.isClosed && this.media.audio !== undefined);
-        if (this.#sampling) return Debug.early();
+        if (this.#sampling || this.#failed) return Debug.early();
 
         Debug.assert(to > from);
         if (from < this.startTime)
@@ -144,33 +146,67 @@ export class MediaSampler {
         this.#sampleProgress = from;
         this.#sampleEnd = to;
 
-        const ok = await this.#mutex.use(async () => {
-            if (this.#cancelling || this.media.isClosed) return false;
+        let ok: boolean;
+        try {
+            ok = await this.#mutex.use(async () => {
+                if (this.#cancelling || this.media.isClosed) return false;
 
-            const prevKeyframe = await this.media.getKeyframeBefore(from);
-            if (prevKeyframe === null
-             || this.#sampleProgress > from
-             || this.#sampleProgress < prevKeyframe.time)
-            {
-                await Debug.trace(`startSampling: ${from.toFixed(4)} - ${to.toFixed(4)}`);
-                await this.media.seekVideo(from);
-            } else {
-                await Debug.trace(`startSampling: ${from.toFixed(4)} - ${to.toFixed(4)} without seeking`);
-            }
-            return true;
-        });
-        if (!ok) return;
+                const prevKeyframe = await this.media.getKeyframeBefore(from);
+                if (prevKeyframe === null
+                 || this.#sampleProgress > from
+                 || this.#sampleProgress < prevKeyframe.time)
+                {
+                    await Debug.trace(`startSampling: ${from.toFixed(4)} - ${to.toFixed(4)}`);
+                    await this.media.seekVideo(from);
+                } else {
+                    await Debug.trace(`startSampling: ${from.toFixed(4)} - ${to.toFixed(4)} without seeking`);
+                }
+                return true;
+            });
+        } catch (e) {
+            this.#sampling = false;
+            this.#failed = true;
+            await Debug.error('startSampling failed:', e);
+            return;
+        }
+        if (!ok) {
+            this.#sampling = false;
+            return;
+        }
+
+        const MAX_RETRIES = 3;
+        let consecutiveErrors = 0;
 
         const doSampling = async () => {
+            let retryDelayMs = 0;
             const ok = await this.#mutex.use(async () => {
-                if (this.#cancelling || this.media.isClosed) return false;
+                if (this.#cancelling || this.media.isClosed) {
+                    this.#sampling = false;
+                    this.#cancelling = false;
+                    return false;
+                }
 
                 let result: SampleResult;
                 try {
                     result = await this.media.sampleAutomatic(20);
+                    consecutiveErrors = 0;
                 } catch (e) {
-                    if (this.#cancelling || this.media.isClosed) return false;
-                    await Debug.warn('sampling call failed, will retry:', e);
+                    if (this.#cancelling || this.media.isClosed) {
+                        this.#sampling = false;
+                        this.#cancelling = false;
+                        return false;
+                    }
+                    consecutiveErrors += 1;
+                    const msg = e instanceof Error ? e.message : String(e);
+                    const isTimeout = msg.includes('timed out');
+                    if (!isTimeout || consecutiveErrors > MAX_RETRIES) {
+                        this.#sampling = false;
+                        this.#failed = true;
+                        await Debug.error('sampling failed, aborting:', e);
+                        return false;
+                    }
+                    retryDelayMs = 200 * consecutiveErrors;
+                    await Debug.warn(`sampling call failed (attempt ${consecutiveErrors}/${MAX_RETRIES}), will retry:`, e);
                     return true;
                 }
                 if (result.audio) {
@@ -203,7 +239,13 @@ export class MediaSampler {
                 }
                 return true;
             });
-            if (ok) requestAnimationFrame(() => void doSampling());
+            if (ok) {
+                if (retryDelayMs > 0) {
+                    setTimeout(() => requestAnimationFrame(() => void doSampling()), retryDelayMs);
+                } else {
+                    requestAnimationFrame(() => void doSampling());
+                }
+            }
         }
         requestAnimationFrame(() => void doSampling());
     }

@@ -30,11 +30,16 @@ function createChannel(
     from: string, handler: {[key in MediaEventKey]?: MediaEventHandler<key>},
     reject: (e: unknown) => void, timeout = 2000
 ) {
-    if (timeout > 0) setTimeout(
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (timeout > 0) timer = setTimeout(
         () => reject(new MediaError(`timed out [${timeout}ms]`, from)), timeout);
 
     const channel = new Channel<MediaEvent>;
     channel.onmessage = (msg) => {
+        if (timer !== undefined) {
+            clearTimeout(timer);
+            timer = undefined;
+        }
         const h = handler[msg.event];
         if (h) {
             h(msg.data as never);
@@ -55,6 +60,42 @@ function createChannel(
     }
     // Debug.trace('created channel for', from);
     return channel;
+}
+
+function invokeWithChannel<T>(
+    command: string,
+    from: string,
+    args: (channel: Channel<MediaEvent>) => Record<string, unknown>,
+    handler: (
+        resolve: (value: T) => void,
+        reject: (e: unknown) => void
+    ) => {[key in MediaEventKey]?: MediaEventHandler<key>},
+    timeout = 2000
+): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        let settled = false;
+        const finishResolve = (value: T) => {
+            settled = true;
+            resolve(value);
+        };
+        const finishReject = (err: unknown) => {
+            settled = true;
+            if (err instanceof Error) {
+                reject(err);
+            } else {
+                const msg = typeof err === 'string'
+                    ? err
+                    : err == null ? 'command failed' : JSON.stringify(err);
+                reject(new MediaError(msg, from));
+            }
+        };
+        const channel = createChannel(from, handler(finishResolve, finishReject), finishReject, timeout);
+        invoke(command, args(channel)).catch((err) => {
+            if (!settled) {
+                finishReject(err);
+            }
+        });
+    });
 }
 
 export type VideoFrameData = {
@@ -177,23 +218,17 @@ export class MMedia {
     }
 
     static async open(path: string) {
-        const id = await new Promise<number>((resolve, reject) => {
-            const channel = createChannel('open', {
-                opened: (data) => resolve(data.id)
-            }, reject);
-            void invoke('open_media', {path, channel});
-        });
-        const status = await new Promise<{
+        const id = await invokeWithChannel<number>('open_media', 'open',
+            (channel) => ({ path, channel }),
+            (resolve) => ({ opened: (data) => resolve(data.id) }));
+        const status = await invokeWithChannel<{
             audioIndex: number,
             videoIndex: number,
             duration: number,
             streams: StreamDescription[]
-        }>((resolve, reject) => {
-            const channel = createChannel('open/status', {
-                mediaStatus: (data) => resolve(data)
-            }, reject);
-            void invoke('media_status', {id, channel});
-        });
+        }>('media_status', 'open/status',
+            (channel) => ({ id, channel }),
+            (resolve) => ({ mediaStatus: (data) => resolve(data) }));
         return new MMedia(id, status.duration, status.streams);
     }
 
@@ -203,73 +238,59 @@ export class MMedia {
 
     async close() {
         Debug.assert(!this.#destroyed);
-        await new Promise<void>((resolve, reject) => {
-            const channel = createChannel('close', {
+        await invokeWithChannel<void>('close_media', 'close',
+            (channel) => ({ id: this.id, channel }),
+            (resolve) => ({
                 done: () => {
                     void Debug.info(`media ${this.id} closed`);
                     this.#destroyed = true;
                     // IPC.deleteListeners(this);
                     resolve();
                 }
-            }, reject);
-            void invoke('close_media', {id: this.id, channel});
-        });
+            }));
     }
 
     async openAudio(audioId: number) {
         Debug.assert(!this.#destroyed);
-        this.#audio = await new Promise<AudioStatus>((resolve, reject) => {
-            const channel = createChannel('openAudio', {
-                audioStatus: (data) => resolve(data)
-            }, reject);
-            void invoke('open_audio', {id: this.id, audioId, channel});
-        });
+        this.#audio = await invokeWithChannel<AudioStatus>('open_audio', 'openAudio',
+            (channel) => ({ id: this.id, audioId, channel }),
+            (resolve) => ({ audioStatus: (data) => resolve(data) }));
         return this.#audio;
     }
 
     async openAudioSampler(audioId: number, samplePerSecond: number) {
         Debug.assert(!this.#destroyed);
-        this.#audio = await new Promise<AudioStatus>((resolve, reject) => {
-            const channel = createChannel('openAudioSampler', {
-                audioStatus: (data) => resolve(data)
-            }, reject);
-            void invoke('open_audio_sampler', {id: this.id, audioId, samplePerSecond, channel});
-        });
+        this.#audio = await invokeWithChannel<AudioStatus>('open_audio_sampler', 'openAudioSampler',
+            (channel) => ({ id: this.id, audioId, samplePerSecond, channel }),
+            (resolve) => ({ audioStatus: (data) => resolve(data) }));
         return this.#audio;
     }
 
     async openVideo(videoId: number, accel: boolean) {
         Debug.assert(!this.#destroyed);
-        this.#video = await new Promise<VideoStatus>((resolve, reject) => {
-            const channel = createChannel('openVideo', {
-                videoStatus: (data) => resolve(data)
-            }, reject);
-            void invoke('open_video', {id: this.id, videoId, accel, channel});
-        });
+        this.#video = await invokeWithChannel<VideoStatus>('open_video', 'openVideo',
+            (channel) => ({ id: this.id, videoId, accel, channel }),
+            (resolve) => ({ videoStatus: (data) => resolve(data) }));
         this.#outSize = [...this.#video.size];
         return this.#video;
     }
 
     async openVideoSampler(videoId: number, accel: boolean) {
         Debug.assert(!this.#destroyed);
-        this.#video = await new Promise<VideoStatus>((resolve, reject) => {
-            const channel = createChannel('openVideoSampler', {
-                videoStatus: (data) => resolve(data)
-            }, reject);
-            void invoke('open_video_sampler', {id: this.id, videoId, accel, channel});
-        });
+        this.#video = await invokeWithChannel<VideoStatus>('open_video_sampler', 'openVideoSampler',
+            (channel) => ({ id: this.id, videoId, accel, channel }),
+            (resolve) => ({ videoStatus: (data) => resolve(data) }));
         return this.#video;
     }
 
     async extractSubtitles(subId: number) {
         Debug.assert(!this.#destroyed);
-        return await new Promise<BackendSubtitleData>((resolve, reject) => {
-            const channel = createChannel('extractSubtitles', {
+        return await invokeWithChannel<BackendSubtitleData>('extract_subtitles', 'extractSubtitles',
+            (channel) => ({ id: this.id, subId, channel }),
+            (resolve) => ({
                 subtitleData: (data) => resolve(data),
                 progress: (data) => void Debug.info('progress: ', data.value),
-            }, reject, -1);
-            void invoke('extract_subtitles', {id: this.id, subId, channel});
-        });
+            }), -1);
     }
 
     async setVideoSize(width: number, height: number) {
@@ -277,27 +298,20 @@ export class MMedia {
         Debug.assert(this.#video !== undefined);
         width = Math.max(1, Math.round(width));
         height = Math.max(1, Math.round(height));
-        await new Promise<void>((resolve, reject) => {
-            const channel = createChannel('setVideoSize', {
-                done: () => resolve()
-            }, reject);
-            void invoke('video_set_size', {id: this.id, channel, width, height});
-        });
+        await invokeWithChannel<void>('video_set_size', 'setVideoSize',
+            (channel) => ({ id: this.id, channel, width, height }),
+            (resolve) => ({ done: () => resolve() }));
         this.#outSize = [width, height];
     }
 
     async sampleAutomatic(targetWorkingTimeMs: number): Promise<SampleResult> {
         Debug.assert(!this.#destroyed);
         Debug.assert(this.#currentJobs == 0);
-        let channel: Channel<MediaEvent> | undefined;
         this.#currentJobs += 1;
         try {
-            return await new Promise<SampleResult>((resolve, reject) => {
-                channel = createChannel('sampleAutomatic', {
-                    sampleDone: (data) => resolve(data)
-                }, reject);
-                void invoke('sample_automatic', { id: this.id, targetWorkingTimeMs, channel });
-            });
+            return await invokeWithChannel<SampleResult>('sample_automatic', 'sampleAutomatic',
+                (channel) => ({ id: this.id, targetWorkingTimeMs, channel }),
+                (resolve) => ({ sampleDone: (data) => resolve(data) }));
         } finally {
             this.#currentJobs -= 1;
         }
@@ -328,15 +342,11 @@ export class MMedia {
     async seek(time: number) {
         Debug.assert(!this.#destroyed);
         Debug.assert(this.#currentJobs == 0);
-        let channel: Channel<MediaEvent> | undefined;
         this.#currentJobs += 1;
         try {
-            return await new Promise<void>((resolve, reject) => {
-                channel = createChannel('seek', {
-                    done: () => resolve()
-                }, reject);
-                void invoke('seek_media', { id: this.id, channel, time });
-            });
+            return await invokeWithChannel<void>('seek_media', 'seek',
+                (channel) => ({ id: this.id, channel, time }),
+                (resolve) => ({ done: () => resolve() }));
         } finally {
             this.#currentJobs -= 1;
         }
@@ -345,15 +355,11 @@ export class MMedia {
     async seekByte(pos: number) {
         Debug.assert(!this.#destroyed);
         Debug.assert(this.#currentJobs == 0);
-        let channel: Channel<MediaEvent> | undefined;
         this.#currentJobs += 1;
         try {
-            return await new Promise<void>((resolve, reject) => {
-                channel = createChannel('seekByte', {
-                    done: () => resolve()
-                }, reject);
-                void invoke('seek_media_byte', { id: this.id, channel, pos });
-            });
+            return await invokeWithChannel<void>('seek_media_byte', 'seekByte',
+                (channel) => ({ id: this.id, channel, pos }),
+                (resolve) => ({ done: () => resolve() }));
         } finally {
             this.#currentJobs -= 1;
         }
@@ -362,15 +368,11 @@ export class MMedia {
     async seekAudio(time: number) {
         Debug.assert(!this.#destroyed);
         Debug.assert(this.#currentJobs == 0);
-        let channel: Channel<MediaEvent> | undefined;
         this.#currentJobs += 1;
         try {
-            return await new Promise<void>((resolve, reject) => {
-                channel = createChannel('seekAudio', {
-                    done: () => resolve()
-                }, reject);
-                void invoke('seek_audio', { id: this.id, channel, time });
-            });
+            return await invokeWithChannel<void>('seek_audio', 'seekAudio',
+                (channel) => ({ id: this.id, channel, time }),
+                (resolve) => ({ done: () => resolve() }));
         } finally {
             this.#currentJobs -= 1;
         }
@@ -379,15 +381,11 @@ export class MMedia {
     async seekVideo(time: number) {
         Debug.assert(!this.#destroyed);
         Debug.assert(this.#currentJobs == 0);
-        let channel: Channel<MediaEvent> | undefined;
         this.#currentJobs += 1;
         try {
-            return await new Promise<void>((resolve, reject) => {
-                channel = createChannel('seekVideo', {
-                    done: () => resolve()
-                }, reject);
-                void invoke('seek_video', { id: this.id, channel, time });
-            });
+            return await invokeWithChannel<void>('seek_video', 'seekVideo',
+                (channel) => ({ id: this.id, channel, time }),
+                (resolve) => ({ done: () => resolve() }));
         } finally {
             this.#currentJobs -= 1;
         }
@@ -416,37 +414,30 @@ export class MMedia {
 
     async getKeyframeBefore(time: number) {
         Debug.assert(!this.#destroyed);
-        let channel: Channel<MediaEvent> | undefined;
-        return await new Promise<MediaEventData['frameQueryResult'] | null>((resolve, reject) => {
-            channel = createChannel('getKeyframeBefore', {
+        return await invokeWithChannel<MediaEventData['frameQueryResult'] | null>('get_keyframe_before', 'getKeyframeBefore',
+            (channel) => ({ id: this.id, channel, time }),
+            (resolve) => ({
                 frameQueryResult: (data) => resolve(data),
                 noResult: () => resolve(null)
-            }, reject);
-            void invoke('get_keyframe_before', { id: this.id, channel, time });
-        });
+            }));
     }
 
     async getFrameBefore(time: number) {
         Debug.assert(!this.#destroyed);
-        let channel: Channel<MediaEvent> | undefined;
-        return await new Promise<MediaEventData['frameQueryResult'] | null>((resolve, reject) => {
-            channel = createChannel('getKeyframeBefore', {
+        return await invokeWithChannel<MediaEventData['frameQueryResult'] | null>('get_frame_before', 'getFrameBefore',
+            (channel) => ({ id: this.id, channel, time }),
+            (resolve) => ({
                 frameQueryResult: (data) => resolve(data),
                 noResult: () => resolve(null)
-            }, reject);
-            void invoke('get_frame_before', { id: this.id, channel, time });
-        });
+            }));
     }
 }
 
 export const MAPI = {
     async version() {
-        return await new Promise<string>((resolve, reject) => {
-            const channel = createChannel('version', {
-                ffmpegVersion: (data) => resolve(data.value)
-            }, reject);
-            void invoke('media_version', {channel});
-        });
+        return await invokeWithChannel<string>('media_version', 'version',
+            (channel) => ({ channel }),
+            (resolve) => ({ ffmpegVersion: (data) => resolve(data.value) }));
     },
 
     async config() {
@@ -454,12 +445,9 @@ export const MAPI = {
     },
 
     async testPerformance(path: string, postprocess: boolean, hwaccel: boolean) {
-        return await new Promise<void>((resolve, reject) => {
-            const channel = createChannel('test_performance', {
-                done: () => resolve()
-            }, reject, -1);
-            void invoke('test_performance', {path, postprocess, hwaccel, channel});
-        });
+        return await invokeWithChannel<void>('test_performance', 'test_performance',
+            (channel) => ({ path, postprocess, hwaccel, channel }),
+            (resolve) => ({ done: () => resolve() }), -1);
     },
 
     async decodeFile(path: string, encoding: string | null) {

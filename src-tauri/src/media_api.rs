@@ -544,7 +544,7 @@ pub async fn sample_automatic(
         let mut ap = state.lock().unwrap();
         let Some(session) = ap.table.get_mut(&id) else {
             send_invalid_id(&channel);
-            return Err(());
+            return;
         };
 
         match work(session, target_working_time_ms) {
@@ -565,17 +565,14 @@ pub async fn sample_automatic(
                     audio, video,
                     is_eof: !has_next
                 });
-                Ok(())
             }
             Err(e) => {
                 send_error!(&channel, e.to_string());
-                Err(())
             }
         }
     })
     .await
     .map_err(|_| ())
-    .flatten()
 }
 
 fn work(

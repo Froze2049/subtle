@@ -15,7 +15,7 @@ export type SeekOptions = {
     imprecise?: boolean;
 };
 
-type State = 'buffering' | 'buffer_full' | 'eof' | 'buffer_eof' | 'closed' | 'suspended';
+type State = 'buffering' | 'buffer_full' | 'eof' | 'buffer_eof' | 'closed' | 'suspended' | 'error';
 
 export type ConsumedFrame = {
     type: 'ok',
@@ -132,6 +132,7 @@ export class PlayerBuffer {
     ): Promise<T> {
         const frame: ConsumedFrame = await this.#mutex.use(() => {
             if (this.#state == 'eof') return { type: 'eof' };
+            if (this.#state == 'error' && this.#videoBuffer.length == 0) return { type: 'eof' };
 
             if (this.#videoBuffer.length == 0) {
                 // no buffer
@@ -188,8 +189,9 @@ export class PlayerBuffer {
 
     #resize = new RestartableTask<[w: number, h: number]>(async ([w, h], tok) => {
         const pos = await this.waitForPlayPosition();
+        if (pos < 0) return;
         await this.#mutex.use(async () => {
-            if (this.state === 'closed') return;
+            if (this.state === 'closed' || this.state === 'error') return;
             if (tok.isCancelled) return;
             await this.media.setVideoSize(w, h);
             if (tok.isCancelled) return;
@@ -204,8 +206,9 @@ export class PlayerBuffer {
         while (performance.now() - t0 < 1000) {
             const pos = await this.#mutex.use(() => this.#playPosition);
             if (pos !== undefined) return pos;
-            if (this.#state == 'closed') return -1;
-            Debug.assert(this.#state == 'buffering');
+            if (this.#state == 'closed' || this.#state == 'error' || this.#state == 'eof' || this.#state == 'buffer_eof')
+                return -1;
+            Debug.assert(this.#state == 'buffering' || this.#state == 'suspended' || this.#state == 'buffer_full');
 
             // avoid microtask starvation
             await Basic.wait(0);
@@ -272,7 +275,7 @@ export class PlayerBuffer {
     }
 
     needBuffering() {
-        if (this.state == 'buffer_eof' || this.state == 'eof')
+        if (this.state == 'buffer_eof' || this.state == 'eof' || this.state == 'error' || this.state == 'closed')
             return false;
 
         return this.#videoBuffer.length < MediaConfig.data.videoCacheSize
@@ -303,24 +306,32 @@ export class PlayerBuffer {
     #bufferingRunning = false;
     async #startBuffering() {
         Debug.assert(this.state !== 'closed');
-        if (this.#bufferingRunning) return;
+        if (this.#bufferingRunning || this.#state === 'error') return;
 
         this.#setState('buffering');
         this.#bufferingRunning = true;
-        while (true) {
-            const result = await this.#mutex.useIfIdle(async () => {
-                if (this.state == 'suspended') {
-                    this.#setState('buffering');
-                }
-                if (this.#state !== 'buffering' && this.#state !== 'suspended') {
-                    this.#bufferingRunning = false;
-                    return false;
-                }
-                await this.#decodeLocked();
-                return true;
-            });
-            if (result === false) break;
-            await Basic.wait(0);
+        try {
+            while (true) {
+                const result = await this.#mutex.useIfIdle(async () => {
+                    if (this.state == 'suspended') {
+                        this.#setState('buffering');
+                    }
+                    if (this.#state !== 'buffering' && this.#state !== 'suspended') {
+                        return false;
+                    }
+                    await this.#decodeLocked();
+                    return true;
+                });
+                if (result === false) break;
+                await Basic.wait(0);
+            }
+        } catch (e) {
+            if (this.#state !== 'closed') {
+                this.#setState('error');
+                await Debug.error('decoding failed:', e);
+            }
+        } finally {
+            this.#bufferingRunning = false;
         }
     }
 
