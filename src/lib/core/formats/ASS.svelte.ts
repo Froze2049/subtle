@@ -328,7 +328,7 @@ export class ASSParser implements SubtitleParser {
 
             const entry = new SubtitleEntry(start, end);
             const style = getStyleOrCreate(opts[fieldMap.get('Style')!].trim());
-            const { result, pos, alignment } = ASSString.parse(text, style, warnings);
+            const { result, pos, alignment } = ASSString.parse(text, style, warnings, nameToStyle);
             entry.texts.set(style, result);
             entry.positioning = pos;
             entry.alignment = alignment;
