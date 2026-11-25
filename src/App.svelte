@@ -38,7 +38,7 @@ import ReviewToolbox from '$lib/toolbox/ReviewToolbox.svelte';
 import { DialogCommands } from '$lib/frontend/Dialogs';
 import { Interface, InterfaceCommands, MEDIA_EXTENSIONS } from '$lib/frontend/Interface';
 import { Playback, PlaybackCommands } from '$lib/frontend/Playback';
-import { Source, SourceCommands } from '$lib/frontend/Source';
+import { Source, SourceCommands, type RecordedActionKind } from '$lib/frontend/Source';
 import { KeybindingManager } from '$lib/frontend/Keybinding';
 import { Editing, Selection } from '$lib/frontend/Editing';
 import { Frontend } from '$lib/frontend/Frontend';
@@ -79,6 +79,23 @@ const me = {};
 let undoRedoUpdateCounter = $state(0);
 Source.onUndoBufferChanged.bind(me, () => {
   undoRedoUpdateCounter++;
+});
+
+let lastAction: { kind: RecordedActionKind, description: string, count: number } | null = $state(null);
+let lastActionTwinkling = $state(false);
+Source.onActionRecorded.bind(me, (kind, description) => {
+  if (lastAction && lastAction.kind === kind && lastAction.description === description) {
+    lastAction = { kind, description, count: lastAction.count + 1 };
+  } else {
+    lastAction = { kind, description, count: 1 };
+  }
+  if (DebugConfig.data.showLastAction) {
+    lastActionTwinkling = false;
+    requestAnimationFrame(() => { lastActionTwinkling = true; });
+  }
+});
+Source.onSubtitleObjectReload.bind(me, (newFile) => {
+  if (newFile) lastAction = null;
 });
 
 let selectionLength = $state(0);
@@ -470,9 +487,29 @@ observer.observe({ type: 'paint', buffered: true });
     class={[{twinkling: statusTwinkling}, $status.type]}
     onanimationend={() => statusTwinkling = false}
   >
-    <div class="message">
+    <div class="message" title={$status.msg}>
       {$status.msg}
     </div>
+    {#if DebugConfig.data.showLastAction}
+      <div
+        class={['border', 'last-action', 'info', {twinkling: lastActionTwinkling}]}
+        onanimationend={() => lastActionTwinkling = false}
+        title={lastAction ? lastAction.description : ''}
+      >
+        <span class="label">
+          {$_(
+            lastAction?.kind === 'undo' ? 'msg.last-action-undo'
+            : lastAction?.kind === 'redo' ? 'msg.last-action-redo'
+            : 'msg.last-action'
+          )}
+        </span>
+        {#if lastAction}
+          {lastAction.description}{#if lastAction.count > 1} ×{lastAction.count}{/if}
+        {:else}
+          {$_('msg.last-action-none')}
+        {/if}
+      </div>
+    {/if}
     {#if selectionLength > 0}
       <div class="border">
         <span class="label">{$_('msg.selected-entries-count')}</span>
@@ -613,12 +650,22 @@ footer {
 
     &.border {
       border-left: 1px solid gray;
+      flex-shrink: 0;
+    }
+
+    &.last-action {
+      max-width: 40%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      border-radius: 2px;
     }
 
     &.message {
       flex-grow: 1;
+      min-width: 0;
       font-size: 100%;
-      overflow-x: scroll;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
   }
 

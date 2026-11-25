@@ -189,6 +189,12 @@ export const DebugConfig = new PublicConfigGroup(
             type: 'boolean',
             default: false
         },
+        showLastAction: {
+            localizedName: () => $_('config.show-last-action'),
+            description: () => $_('config.show-last-action-d'),
+            type: 'boolean',
+            default: false
+        },
         persistentLogLevel: {
             localizedName: () => $_('config.persistent-log-level'),
             type: 'dropdown',

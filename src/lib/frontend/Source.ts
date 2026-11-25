@@ -27,6 +27,8 @@ export type Snapshot = {
     description: string
 };
 
+export type RecordedActionKind = 'do' | 'undo' | 'redo';
+
 export enum ChangeCause {
     UIForm,
     UIList,
@@ -165,6 +167,7 @@ export const Source = {
     get recentOpened() { return recentOpened; },
 
     onUndoBufferChanged: new EventHost(),
+    onActionRecorded: new EventHost<[kind: RecordedActionKind, description: string, type?: ChangeType]>(),
     onSubtitlesChanged: new EventHost<[type: ChangeType]>(),
     onSubtitleObjectReload: new EventHost<[newFile: boolean]>(),
     onSubtitleViewChanged: new EventHost<[]>(),
@@ -196,6 +199,7 @@ export const Source = {
 
         this.onUndoBufferChanged.dispatch();
         this.onSubtitlesChanged.dispatch(type);
+        this.onActionRecorded.dispatch('do', description, type);
     },
 
     canUndo() { return undoStack.length > 1; },
@@ -213,6 +217,7 @@ export const Source = {
         readSnapshot(snap, await MAPI.readUndo());
         this.onUndoBufferChanged.dispatch();
         Frontend.setStatus($_('msg.undone', {values: {op: top.description}}), 'info');
+        this.onActionRecorded.dispatch('undo', top.description);
         return true;
     },
 
@@ -226,6 +231,7 @@ export const Source = {
         readSnapshot(top, await MAPI.readRedo());
         this.onUndoBufferChanged.dispatch();
         Frontend.setStatus($_('msg.redone', {values: {op: top.description}}), 'info');
+        this.onActionRecorded.dispatch('redo', top.description);
         return true;
     },
 
