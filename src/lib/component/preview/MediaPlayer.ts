@@ -187,6 +187,14 @@ export class MediaPlayer {
         await this.#buffer.audio.setVolume(value);
     }
 
+    get playbackRate() {
+        return this.#buffer.audio.playbackRate;
+    }
+
+    async setPlaybackRate(value: number) {
+        await this.#buffer.audio.setPlaybackRate(value);
+    }
+
     #drawFrame(frame: ReadonlyVideoFrameData) {
         const [ow, oh] = frame.size;
         if (this.#bufCanvas.width !== ow || this.#bufCanvas.height !== oh) {
@@ -283,7 +291,7 @@ export class MediaPlayer {
                     return -1;
                 case "waiting_for_clock": {
                     this.#diag.waitForAudio += 1;
-                    return data.earliest - clock;
+                    return (data.earliest - clock) / this.playbackRate;
                 }
                 case "ok": {
                     const frame = data.frame;
@@ -300,10 +308,12 @@ export class MediaPlayer {
                         // ???
                         return 0;
                     }
-                    let delay = Math.max(0, targetTime - newClock);
-                    if (delay > 2 / framerate) {
+                    const rate = this.playbackRate;
+                    let delay = Math.max(0, (targetTime - newClock) / rate);
+                    const maxDelay = (2 / framerate) / rate;
+                    if (delay > maxDelay) {
                         await Debug.warn(`presentNext: delay too long:`, delay);
-                        delay = 2 / framerate;
+                        delay = maxDelay;
                     }
                     return delay;
                 }

@@ -15,10 +15,16 @@
 
   import { PauseIcon, PlayIcon, Volume2Icon } from "@lucide/svelte";
   import { onMount } from "svelte";
+  import { _ } from "svelte-i18n";
   import * as z from "zod/v4-mini";
+
+  const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2, 2.5, 3, 4] as const;
 
   let volume = Memorized.$('playbackVolume', z.number().check(z.gt(0)).check(z.lt(1)), 0.8);
   volume.subscribe((x) => void Playback.player?.setVolume(x));
+
+  let playbackRate = Memorized.$('playbackRate', z.number().check(z.gte(0.25)).check(z.lte(4)), 1);
+  playbackRate.subscribe((x) => void Playback.player?.setPlaybackRate(x));
 
   let isPlaying = $state(false);
   let playPosStart = $state(0);
@@ -31,6 +37,7 @@
   let boxes = $state<LineBox[]>([]);
 
   let volumePopup: Popup;
+  let speedPopup: Popup;
 
   let canvas: HTMLCanvasElement;
   let overlay = $state<HTMLElement>();
@@ -48,6 +55,8 @@
     playPosStart = Playback.player!.startTime;
     playPosEnd = Playback.player!.startTime + Playback.duration;
     playPos = Playback.position;
+    void Playback.player!.setVolume($volume);
+    void Playback.player!.setPlaybackRate($playbackRate);
   });
 
   let lastUiPosUpdate = 0;
@@ -73,6 +82,19 @@
     min="0" max="1" step="any"
     value={$volume}
     oninput={(x) => $volume = x.currentTarget.valueAsNumber}/>
+</Popup>
+
+<Popup bind:this={speedPopup} style="padding: 3px; display: flex; flex-direction: column; gap: 2px;">
+  {#each PLAYBACK_RATES as rate (rate)}
+    <button class="speed-option" class:active={$playbackRate === rate}
+      onclick={() => {
+        $playbackRate = rate;
+        speedPopup.close();
+      }}
+    >
+      {rate}x
+    </button>
+  {/each}
 </Popup>
 
 <div class="vlayout fill area"
@@ -112,6 +134,17 @@
       volumePopup.openAt(rect.left, rect.bottom, 100);
     }} disabled={$loadState !== 'loaded'}>
       <Volume2Icon />
+    </button>
+    <button class="speed-btn"
+      aria-label={$_('preview.playback-speed')}
+      title={$_('preview.playback-speed')}
+      disabled={$loadState !== 'loaded'}
+      onclick={(e) => {
+        const self = e.currentTarget;
+        const rect = self.getBoundingClientRect();
+        speedPopup.openAt(rect.left, rect.bottom, 64);
+      }}>
+      {$playbackRate}x
     </button>
     <TimestampInput bind:timestamp={playPosInput}
       tight={true}
@@ -165,6 +198,24 @@ canvas {
 
   &::-webkit-slider-runnable-track {
     height: 6px;
+  }
+}
+
+.speed-btn {
+  font-size: 85%;
+  padding: 0 5px;
+  min-width: 3.1em;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed-option {
+  font-size: 90%;
+  padding: 2px 6px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+
+  &.active {
+    font-weight: bold;
   }
 }
 </style>

@@ -12,6 +12,7 @@ export class Audio {
     #worklet: AudioWorkletNode;
     #mutex = new Mutex(1000, 'audio');
     #volume = 1;
+    #playbackRate = 1;
     #feedbackTimestamp = 0;
 
     #feedback: AudioFeedbackData = {
@@ -49,8 +50,8 @@ export class Audio {
         const base = this.#feedback.time;
         if (base === undefined) return undefined;
         if (!this.#feedback.isPlaying) return base;
-        const elapsed = Math.max(0, (performance.now() - this.#feedbackTimestamp) / 1000);
-        const capped = Math.min(elapsed, 0.25);
+        const elapsed = Math.max(0, (performance.now() - this.#feedbackTimestamp) / 1000) * this.#playbackRate;
+        const capped = Math.min(elapsed, 0.25 * this.#playbackRate);
         return this.#feedback.tailTime !== undefined
             ? Math.min(base + capped, this.#feedback.tailTime)
             : base + capped;
@@ -66,6 +67,10 @@ export class Audio {
 
     get volume() {
         return this.#volume;
+    }
+
+    get playbackRate() {
+        return this.#playbackRate;
     }
 
     private constructor(private ctx: AudioContext) {
@@ -143,6 +148,13 @@ export class Audio {
         if (value == this.#volume) return;
         this.#volume = value;
         await this.#post({ type: 'setVolume', value: Math.pow(value, VOLUME_POWER) });
+    }
+
+    async setPlaybackRate(value: number) {
+        const clamped = Math.min(4, Math.max(0.25, value));
+        if (clamped == this.#playbackRate) return;
+        this.#playbackRate = clamped;
+        await this.#post({ type: 'setPlaybackRate', value: clamped });
     }
 
     async updateStatus() {
