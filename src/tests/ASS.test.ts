@@ -35,7 +35,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
     message: () => Promise.resolve(),
 }));
 
-import { ASSParser, fromASSColor, toASSColor } from '../lib/core/formats/ASS.svelte';
+import { ASSParser, ASSWriter, fromASSColor, toASSColor } from '../lib/core/formats/ASS.svelte';
 import { ASSString } from '../lib/core/formats/ASSString';
 import { HTMLString } from '../lib/core/formats/SRT_HTML';
 import { AlignMode } from '../lib/core/Labels';
@@ -348,5 +348,27 @@ Dialogue: 0,0:00:01.00,0:00:02.00,ZH_HOST,,0,0,0,,测试{\\rMISSING_STYLE}文本
         const fromHtml = HTMLString.parse(html, zhHost, htmlWarnings);
         expect(htmlWarnings.ignoredTags.size).toBe(0);
         expect(RichText.equals(fromHtml, original)).toBe(true);
+    });
+
+    it('exports matching inline overrides back to \\r<StyleName> and \\r via ASSWriter', () => {
+        const { subs } = new ASSParser(INLINE_STYLE_SAMPLE).decode();
+        const exported = new ASSWriter(subs).toString();
+
+        expect(exported).toContain(
+            'Dialogue: 0,00:00:27.87,00:00:31.15,ZH_HOST,,0,0,0,,曾是个百无聊赖的摩门教主妇 {\\rZH_HOST_LATIN}2003{\\r}年{\\rZH_HOST_LATIN}6{\\r}月{\\rZH_HOST_LATIN}2{\\r}日'
+        );
+        expect(exported).toContain(
+            'Dialogue: 0,00:01:46.86,00:01:48.06,ZH_CLIP,,0,0,0,,我代表{\\rZH_CLIP_LATIN}ABC{\\r}新闻全体同仁'
+        );
+        expect(exported).toContain(
+            'Dialogue: 0,00:08:51.29,00:08:56.45,ZH_NOTE,,0,0,0,,{\\rZH_NOTE_LATIN}[CinemaSins]:{\\r} 美国知名影评频道'
+        );
+        expect(exported).toContain(
+            'Dialogue: 0,00:09:00.00,00:09:02.00,ZH_HOST,,0,0,0,,前段{\\rEMPHASIS}重点{\\r}后段'
+        );
+
+        // Re-parse the exported ASS to confirm lossless round-trip with 0 warnings
+        const reparsed = new ASSParser(exported).decode();
+        expect(reparsed.messages).toEqual([]);
     });
 });
