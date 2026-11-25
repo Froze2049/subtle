@@ -351,6 +351,8 @@
     "show-keyframes-d": "顯示關鍵幀標記。在許多影片檔案中，關鍵幀常常對應於鏡頭切換，可以作為對齊字幕條的參考。",
     "page-scroll-on-playback": "播放時翻頁捲動",
     "page-scroll-on-playback-d": "開啟後，播放頭到達時間線右邊緣時整頁向前翻頁，而不是貼邊持續推移時間線。",
+    "wheel-horizontal-scroll": "滑鼠滾輪預設橫向捲動",
+    "wheel-horizontal-scroll-d": "開啟後，在時間線中直接捲動滑鼠滾輪將橫向捲動時間軸，按住 Shift 鍵捲動滾輪可縱向捲動軌道。",
     "show-last-action": "顯示最近操作",
     "show-last-action-d": "在底部狀態列右側持續顯示最近一次可復原操作（以及復原/重做），便於除錯。",
     "show-test-toolbox": "顯示測試工具箱",
