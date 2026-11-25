@@ -1,7 +1,7 @@
 import { Debug } from "$lib/Debug";
 
 export function barPlot(
-    ctx: OffscreenCanvasRenderingContext2D,
+    ctx: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
     values: readonly (readonly [number, readonly number[]])[],
     x: number, y: number, w: number, h: number
 ) {

@@ -40,7 +40,7 @@ export class PlayerBuffer {
 
     #playPosition?: number;
 
-    #pool: SlabBuffer<ImageDataArray>;
+    #pool: SlabBuffer<Uint8Array>;
     #videoBuffer: VideoFrameData[] = [];
 
     #diag = {
@@ -231,9 +231,9 @@ export class PlayerBuffer {
     #reallocatePool() {
         const [w, h] = this.media.video!.size;
         const len = Math.ceil(MediaConfig.data.videoCacheSize * 1.5);
-        const size = Math.ceil((w * h * 4 + 24) * 1.5);
+        const size = Math.ceil((w * h * 1.5 + 24) * 1.5);
         if (!this.#pool) {
-            this.#pool = new SlabBuffer(Uint8ClampedArray, len, size);
+            this.#pool = new SlabBuffer(Uint8Array, len, size);
             return this.#pool;
         }
         this.#pool = this.#pool.resize(

@@ -11,6 +11,18 @@ export class BinaryReader<T extends ArrayBufferLike = ArrayBufferLike> {
         return this.i;
     }
 
+    readU8() {
+        const result = this.data.getUint8(this.i);
+        this.i += 1;
+        return result;
+    }
+
+    readU16() {
+        const result = this.data.getUint16(this.i, true);
+        this.i += 2;
+        return result;
+    }
+
     readU32() {
         const result = this.data.getUint32(this.i, true);
         this.i += 4;
@@ -39,6 +51,12 @@ export class BinaryReader<T extends ArrayBufferLike = ArrayBufferLike> {
         const content = new Float32Array(this.data.buffer, this.i, length);
         this.i += length * 4;
         return opt?.copy ? new Float32Array(content) : content;
+    }
+
+    readU8Array(length: number, opt?: { copy?: boolean }) {
+        const content = new Uint8Array(this.data.buffer, this.i, length);
+        this.i += length;
+        return opt?.copy ? new Uint8Array(content) : content;
     }
 
     readU8ClampedArray(length: number, opt?: { copy?: boolean }) {

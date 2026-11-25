@@ -194,6 +194,10 @@ pub trait VideoSink {
     fn process(&mut self, frame: frame::Video) -> Result<(), MediaError>;
 }
 
+fn align_even(v: u32) -> u32 {
+    (v & !1).max(2)
+}
+
 pub struct Player {
     original_format: format::Pixel,
     original_size: (u32, u32),
@@ -214,16 +218,28 @@ impl VideoSink for Player {
     }
 
     fn process(&mut self, mut frame: frame::Video) -> Result<(), MediaError> {
-        if frame.decoded.format() != self.original_format {
-            warn!("decoded format is actually {:?}", frame.decoded.format());
-            self.original_format = frame.decoded.format();
+        let src_format = frame.decoded.format();
+        let src_size = (frame.decoded.width(), frame.decoded.height());
+
+        // Zero-conversion passthrough when source is already YUV420P at target size
+        if src_format == format::Pixel::YUV420P && src_size == self.output_size {
+            self.frames.push_back(frame);
+            return Ok(());
+        }
+
+        if src_format != self.original_format || src_size != self.original_size {
+            warn!("decoded format/size is actually {:?} {:?}", src_format, src_size);
+            self.original_format = src_format;
+            self.original_size = src_size;
             self.create_scaler()?;
         }
 
-        // av_frame_alloc
+        let color_space = frame.decoded.color_space();
+        let color_range = frame.decoded.color_range();
         let mut processed = frame::VideoData::empty();
-        // sws_scale
         check!(self.scaler.run(&frame.decoded, &mut processed))?;
+        processed.set_color_space(color_space);
+        processed.set_color_range(color_range);
         frame.decoded = processed;
         self.frames.push_back(frame);
         Ok(())
@@ -239,21 +255,23 @@ impl Player {
         };
 
         let (w, h) = (decoder.inner.width(), decoder.inner.height());
+        let sar_w: u32 = decoder.inner.width()
+            .rescale(Rational(1, 1), decoder.sample_aspect_ratio())
+            .try_into()
+            .unwrap();
+        let out_size = (align_even(sar_w), align_even(h));
         let scaling_method = scaling::Flags::FAST_BILINEAR;
 
         Ok(Self {
             original_format: format,
             original_size: (w, h),
-            output_size: (w, h),
+            output_size: out_size,
             scaling_method,
             scaler: check!(scaling::Context::get(
                 format, w, h,
-                format::Pixel::RGBA,
-                decoder.inner.width()
-                    .rescale(Rational(1, 1), decoder.sample_aspect_ratio())
-                    .try_into()
-                    .unwrap(),
-                h,
+                format::Pixel::YUV420P,
+                out_size.0,
+                out_size.1,
                 scaling_method,
             ))?,
             frames: VecDeque::new()
@@ -265,13 +283,14 @@ impl Player {
     }
 
     pub fn set_output_size(&mut self, size: (u32, u32)) -> Result<(), MediaError> {
-        if self.output_size == size {
+        let aligned = (align_even(size.0), align_even(size.1));
+        if self.output_size == aligned {
             return Ok(());
         }
 
-        self.output_size = size;
+        self.output_size = aligned;
         self.create_scaler()?;
-        debug!("set_output_size: {:?}, format {:?}", size, self.original_format);
+        debug!("set_output_size: {:?}, format {:?}", aligned, self.original_format);
         Ok(())
     }
 
@@ -280,7 +299,7 @@ impl Player {
             self.original_format,
             self.original_size.0,
             self.original_size.1,
-            format::Pixel::RGBA,
+            format::Pixel::YUV420P,
             self.output_size.0,
             self.output_size.1,
             self.scaling_method,

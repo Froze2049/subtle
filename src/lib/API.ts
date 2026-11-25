@@ -101,19 +101,25 @@ function invokeWithChannel<T>(
 export type VideoFrameData = {
     readonly pktpos: number,
     readonly time: number,
-    readonly stride: number,
+    readonly width: number,
+    readonly height: number,
+    readonly colorMatrix: number,
+    readonly colorRange: number,
     readonly length: number,
     readonly size: readonly [width: number, height: number],
-    readonly content: BufferHandle<ImageDataArray>
+    readonly content: BufferHandle<Uint8Array>
 };
 
 export type ReadonlyVideoFrameData = {
     readonly pktpos: number,
     readonly time: number,
-    readonly stride: number,
+    readonly width: number,
+    readonly height: number,
+    readonly colorMatrix: number,
+    readonly colorRange: number,
     readonly length: number,
     readonly size: readonly [width: number, height: number],
-    readonly content: ReadonlyBufferHandle<ImageDataArray>
+    readonly content: ReadonlyBufferHandle<Uint8Array>
 };
 
 export type AudioFrameData = {
@@ -176,7 +182,7 @@ export class MMedia {
 
     #readFrames(
         data: ArrayBuffer,
-        pool: SlabBuffer<ImageDataArray>
+        pool: SlabBuffer<Uint8Array>
     ): DecodeResult {
         const start = performance.now();
 
@@ -205,16 +211,20 @@ export class MMedia {
 
     #readVideoFrame(
         view: BinaryReader<ArrayBuffer>,
-        pool: SlabBuffer<ImageDataArray>
+        pool: SlabBuffer<Uint8Array>
     ): VideoFrameData {
         const time = view.readF64();
         const pktpos = view.readI64();
-        const stride = view.readU32();
+        const width = view.readU32();
+        const height = view.readU32();
+        const colorMatrix = view.readU8();
+        const colorRange = view.readU8();
+        view.readU16(); // reserved
         const length = view.readU32();
-        const content = view.readU8ClampedArray(length, { copy: false });
+        const content = view.readU8Array(length, { copy: false });
         const buf = pool.allocate(length);
         buf.data.set(content);
-        return { pktpos, time, stride, length, content: buf, size: [...this.#outSize] };
+        return { pktpos, time, width, height, colorMatrix, colorRange, length, content: buf, size: [width, height] };
     }
 
     static async open(path: string) {
@@ -319,7 +329,7 @@ export class MMedia {
 
     async decodeAutomatic(
         targetWorkingTimeMs: number,
-        pool: SlabBuffer<ImageDataArray>
+        pool: SlabBuffer<Uint8Array>
     ) {
         Debug.assert(!this.#destroyed);
         Debug.assert(this.#currentJobs == 0);
@@ -391,7 +401,7 @@ export class MMedia {
         }
     }
 
-    async skipUntil(time: number, pool: SlabBuffer<ImageDataArray>) {
+    async skipUntil(time: number, pool: SlabBuffer<Uint8Array>) {
         Debug.assert(!this.#destroyed);
         Debug.assert(this.#currentJobs == 0);
         this.#currentJobs += 1;

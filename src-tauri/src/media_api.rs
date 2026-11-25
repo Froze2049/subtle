@@ -636,32 +636,67 @@ fn send_frames(
 
 /**
  * frame := [
- *  time        : [f64]
- *  pktpos      : [i64]
- *  stride      : [u32]
- *  length      : [u32]
- *  rgba data   : \[[u8]]
+ *  time         : [f64]
+ *  pktpos       : [i64]
+ *  width        : [u32]
+ *  height       : [u32]
+ *  color_matrix : [u8]   (0=BT.709, 1=BT.601, 2=BT.2020)
+ *  color_range  : [u8]   (0=Limited/TV, 1=Full/PC)
+ *  reserved     : [u16]
+ *  length       : [u32]  (= width * height * 3 / 2)
+ *  yuv420p data : [u8; length] (tightly packed Y, U, V planes)
  * ]
  * response := [
- *  size        : [u32]
- *  frames      : frame[]
+ *  size         : [u32]
+ *  frames       : frame[]
  * ]
  * */
 pub fn pack_video_frames(frames: &VecDeque<frame::Video>, buf: &mut Vec<u8>) {
-    fn to_byte_slice(data: &[(u8, u8, u8, u8)]) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(data.as_ptr().cast(), data.len() * 4) }
+    fn copy_plane(src: &[u8], stride: usize, row_bytes: usize, rows: usize, dst: &mut Vec<u8>) {
+        if stride == row_bytes {
+            dst.extend_from_slice(&src[..row_bytes * rows]);
+        } else {
+            for r in 0..rows {
+                let start = r * stride;
+                dst.extend_from_slice(&src[start..start + row_bytes]);
+            }
+        }
     }
 
     buf.extend(u32::try_from(frames.len()).unwrap().to_le_bytes().iter());
     for frame in frames {
         let time = frame.meta.time.0;
-        let data = to_byte_slice(frame.decoded.plane(0));
+        let w = frame.decoded.width() as usize;
+        let h = frame.decoded.height() as usize;
+        let cw = w / 2;
+        let ch = h / 2;
+        let total_len = w * h + cw * ch * 2;
+
+        let color_matrix: u8 = match frame.decoded.color_space() {
+            ffmpeg::color::Space::BT709 => 0,
+            ffmpeg::color::Space::BT470BG
+            | ffmpeg::color::Space::SMPTE170M
+            | ffmpeg::color::Space::FCC => 1,
+            ffmpeg::color::Space::BT2020NCL | ffmpeg::color::Space::BT2020CL => 2,
+            _ => if h >= 720 { 0 } else { 1 },
+        };
+        let color_range: u8 = match frame.decoded.color_range() {
+            ffmpeg::color::Range::JPEG => 1,
+            _ => 0,
+        };
 
         buf.extend(time.to_le_bytes().iter());
         buf.extend(frame.meta.pkt_pos.to_le_bytes().iter());
-        buf.extend(u32::try_from(frame.decoded.stride(0) / 4).unwrap().to_le_bytes().iter());
-        buf.extend(u32::try_from(data.len()).unwrap().to_le_bytes().iter());
-        buf.extend_from_slice(data);
+        buf.extend(u32::try_from(w).unwrap().to_le_bytes().iter());
+        buf.extend(u32::try_from(h).unwrap().to_le_bytes().iter());
+        buf.push(color_matrix);
+        buf.push(color_range);
+        buf.extend(0u16.to_le_bytes().iter());
+        buf.extend(u32::try_from(total_len).unwrap().to_le_bytes().iter());
+
+        copy_plane(frame.decoded.data(0), frame.decoded.stride(0), w, h, buf);
+        copy_plane(frame.decoded.data(1), frame.decoded.stride(1), cw, ch, buf);
+        copy_plane(frame.decoded.data(2), frame.decoded.stride(2), cw, ch, buf);
     }
 }
 

@@ -9,6 +9,7 @@ import { Audio } from "./Audio";
 import { MediaConfig } from "./Config";
 import { AsyncEventHost, EventHost } from "@the_dissidents/svelte-ui";
 import { PlayerBuffer, type SeekOptions } from "./PlayerBuffer";
+import { WebGLVideoRenderer, convertYUV420PToRGBA } from "./WebGLVideoRenderer";
 import { barPlot } from "$lib/details/DebugPlot";
 
 const DAMPING = 0.5;
@@ -26,9 +27,12 @@ export class MediaPlayer {
     #intent: 'playing' | 'paused' | 'closed' = 'paused';
     #mutex = new Mutex(1000, 'MediaPlayer');
 
-    #bufCanvas: OffscreenCanvas;
-    #bufCtx: OffscreenCanvasRenderingContext2D;
+    #webgl: WebGLVideoRenderer | null;
+    #fallbackCanvas?: OffscreenCanvas;
+    #fallbackCtx?: OffscreenCanvasRenderingContext2D;
+    #fallbackImageData?: ImageData;
     #bufFrameSize: [number, number] = [0, 0];
+    #lastFrameTime = 0;
     #hasFrame = false;
     #displayOffset: [number, number] = [0, 0];
     #displaySize: [number, number] = [1, 1];
@@ -68,10 +72,13 @@ export class MediaPlayer {
         private readonly manager: CanvasManager,
         private rawurl: string,
     ) {
-        this.#bufCanvas = new OffscreenCanvas(1, 1);
-        const ctx = this.#bufCanvas.getContext('2d', { alpha: false });
-        if (!ctx) throw new Error("VideoPlayer: cannot create offscreen context");
-        this.#bufCtx = ctx;
+        this.#webgl = WebGLVideoRenderer.create();
+        if (!this.#webgl) {
+            this.#fallbackCanvas = new OffscreenCanvas(2, 2);
+            const ctx = this.#fallbackCanvas.getContext('2d', { alpha: false });
+            if (!ctx) throw new Error("VideoPlayer: cannot create offscreen context");
+            this.#fallbackCtx = ctx;
+        }
 
         manager.onDisplaySizeChanged.bind(this, () => {
             this.#scheduleOutputSizeUpdate();
@@ -103,17 +110,17 @@ export class MediaPlayer {
         let [ow, oh] = w / h < ratio ? [w, w / ratio] : [h * ratio, h];
         this.#displayOffset = [Math.round((w - ow) / 2), Math.round((h - oh) / 2)];
 
-        ow = Math.max(1, Math.round(ow));
-        oh = Math.max(1, Math.round(oh));
+        ow = Math.max(2, Math.round(ow) & ~1);
+        oh = Math.max(2, Math.round(oh) & ~1);
         this.#displaySize = [ow, oh];
 
         if (MediaConfig.data.limitFrameSize > 0.5
-         && ow * oh * 4 > MediaConfig.data.limitFrameSize * 1024 * 1024)
+         && ow * oh * 1.5 > MediaConfig.data.limitFrameSize * 1024 * 1024)
         {
-            oh = Math.sqrt(MediaConfig.data.limitFrameSize / 4 / ratio) * 1024;
+            oh = Math.sqrt(MediaConfig.data.limitFrameSize / 1.5 / ratio) * 1024;
             ow = oh * ratio;
-            ow = Math.max(1, Math.round(ow));
-            oh = Math.max(1, Math.round(oh));
+            ow = Math.max(2, Math.round(ow) & ~1);
+            oh = Math.max(2, Math.round(oh) & ~1);
         }
 
         return [ow, oh];
@@ -175,6 +182,8 @@ export class MediaPlayer {
             if (this.#intent == 'closed') return Debug.early();
             this.#intent = 'closed';
             await Debug.info('closing media player');
+            this.#webgl?.dispose();
+            this.#webgl = null;
             await this.#buffer.close();
         });
     }
@@ -196,29 +205,38 @@ export class MediaPlayer {
     }
 
     #drawFrame(frame: ReadonlyVideoFrameData) {
-        const [ow, oh] = frame.size;
-        if (this.#bufCanvas.width !== ow || this.#bufCanvas.height !== oh) {
-            this.#bufCanvas.width = ow;
-            this.#bufCanvas.height = oh;
+        const ow = frame.width;
+        const oh = frame.height;
+        let rendered = false;
+        if (this.#webgl) {
+            rendered = this.#webgl.render(frame);
         }
-        const ctx = this.#bufCtx;
-        const imgData = new ImageData(frame.content.data, frame.stride);
-        ctx.putImageData(imgData, 0, 0, 0, 0, ow, oh);
+        if (!rendered) {
+            if (!this.#fallbackCanvas || !this.#fallbackCtx) {
+                this.#fallbackCanvas = new OffscreenCanvas(ow, oh);
+                const ctx = this.#fallbackCanvas.getContext('2d', { alpha: false });
+                if (!ctx) return;
+                this.#fallbackCtx = ctx;
+            }
+            if (this.#fallbackCanvas.width !== ow || this.#fallbackCanvas.height !== oh) {
+                this.#fallbackCanvas.width = ow;
+                this.#fallbackCanvas.height = oh;
+            }
+            if (!this.#fallbackImageData
+             || this.#fallbackImageData.width !== ow
+             || this.#fallbackImageData.height !== oh)
+            {
+                this.#fallbackImageData = new ImageData(ow, oh);
+            }
+            convertYUV420PToRGBA(frame, this.#fallbackImageData.data);
+            this.#fallbackCtx.putImageData(this.#fallbackImageData, 0, 0);
+        }
         this.#bufFrameSize = [ow, oh];
+        this.#lastFrameTime = frame.time;
         this.#hasFrame = true;
 
-        const [dw, dh] = this.#displaySize;
-        const rescaled = ow !== dw || oh !== dh;
-        const w = ow;
-        const h = oh;
-        const dx = 0;
-
         if (!MediaConfig.data.showDebug) return;
-        const videoSize = this.#buffer.videoBufferSize
-        const audioSize = this.#buffer.audio.bufferSize;
         const clock = this.#buffer.audio.time;
-
-        let clockString: string, latencyStr: string;
         if (clock !== undefined) {
             const latency = Math.round((clock - frame.time) * 1000);
             this.#diag.latencies.push(latency);
@@ -227,38 +245,7 @@ export class MediaPlayer {
 
             this.#diag.latencySquared = this.#diag.latencySquared * DAMPING
                 + (latency * latency * (1 - DAMPING));
-
-            clockString = clock.toFixed(3);
-            latencyStr = latency.toFixed(1);
-        } else {
-            clockString = 'n/a!';
-            latencyStr = 'n/a!';
         }
-
-        ctx.fillStyle = 'cyan';
-        ctx.font = `${window.devicePixelRatio * 10}px Courier`;
-        ctx.textBaseline = 'top';
-        ctx.textAlign = 'left'
-
-        const x = dx;
-        ctx.fillText(`FPS ${this.frameRate.toFixed(3)}`
-                   + `SPR ${this.#buffer.media.audio!.sampleRate}`, x, 0);
-        ctx.fillText(`ATi ${clockString} s`, x, 20);
-        ctx.fillText(`VTi ${frame.time.toFixed(3)} s`, x, 40);
-        ctx.fillText(`LAT${latencyStr.padStart(5)}`.padEnd(10)
-                   + `STS ${Math.sqrt(this.#diag.latencySquared).toFixed(1).padStart(4)}`, x, 60);
-        ctx.fillText(`DEL ${this.#diag.delay.toFixed(1).padStart(4)}`, x, 80);
-        ctx.fillText(`VBL ${this.#buffer.videoBufferLength}`.padEnd(9)
-                   + `(${(videoSize / 1024 / 1024).toFixed(2)}MB)`, x, 100);
-        ctx.fillText(`ABL ${this.#buffer.audio.bufferLength}`.padEnd(9)
-                   + `(${(audioSize / 1024).toFixed(0)}KB)`, x, 120);
-        ctx.fillText(rescaled
-            ? `RES ${ow}x${oh} -> ${dw}x${dh}`
-            : `RES ${ow}x${oh}`, x, 140);
-        ctx.fillText(`AFL ${this.#buffer.audio.lastFrameLength}`, x, 160);
-
-        barPlot(ctx, this.#buffer.fetchTimes.map((v, i) => [i, v]), w - 200, h - 120, 200, 100);
-        barPlot(ctx, this.#diag.latencies.map((v, i) => [i, [v]]), w - 200, 0, 200, 100);
     }
 
     async #presentNextLocked() {
@@ -344,13 +331,50 @@ export class MediaPlayer {
     renderTo(ctx: CanvasRenderingContext2D) {
         if (!this.#hasFrame || this.#bufFrameSize[0] <= 0 || this.#bufFrameSize[1] <= 0)
             return;
+        const source = this.#webgl ? this.#webgl.canvas : this.#fallbackCanvas;
+        if (!source) return;
         const [dx, dy] = this.#displayOffset;
         const [dw, dh] = this.#displaySize;
         ctx.drawImage(
-            this.#bufCanvas,
+            source,
             0, 0, this.#bufFrameSize[0], this.#bufFrameSize[1],
             dx, dy, dw, dh
         );
+
+        if (!MediaConfig.data.showDebug) return;
+        const [ow, oh] = this.#bufFrameSize;
+        const rescaled = ow !== dw || oh !== dh;
+        const videoSize = this.#buffer.videoBufferSize;
+        const audioSize = this.#buffer.audio.bufferSize;
+        const clock = this.#buffer.audio.time;
+        const clockString = clock !== undefined ? clock.toFixed(3) : 'n/a!';
+        const latencyStr = clock !== undefined
+            ? Math.round((clock - this.#lastFrameTime) * 1000).toFixed(1)
+            : 'n/a!';
+
+        ctx.fillStyle = 'cyan';
+        ctx.font = `${window.devicePixelRatio * 10}px Courier`;
+        ctx.textBaseline = 'top';
+        ctx.textAlign = 'left';
+
+        ctx.fillText(`FPS ${this.frameRate.toFixed(3)}`
+                   + `SPR ${this.#buffer.media.audio!.sampleRate}`, dx, dy);
+        ctx.fillText(`ATi ${clockString} s`, dx, dy + 20);
+        ctx.fillText(`VTi ${this.#lastFrameTime.toFixed(3)} s`, dx, dy + 40);
+        ctx.fillText(`LAT${latencyStr.padStart(5)}`.padEnd(10)
+                   + `STS ${Math.sqrt(this.#diag.latencySquared).toFixed(1).padStart(4)}`, dx, dy + 60);
+        ctx.fillText(`DEL ${this.#diag.delay.toFixed(1).padStart(4)}`, dx, dy + 80);
+        ctx.fillText(`VBL ${this.#buffer.videoBufferLength}`.padEnd(9)
+                   + `(${(videoSize / 1024 / 1024).toFixed(2)}MB)`, dx, dy + 100);
+        ctx.fillText(`ABL ${this.#buffer.audio.bufferLength}`.padEnd(9)
+                   + `(${(audioSize / 1024).toFixed(0)}KB)`, dx, dy + 120);
+        ctx.fillText((rescaled
+            ? `RES ${ow}x${oh} -> ${dw}x${dh}`
+            : `RES ${ow}x${oh}`) + (this.#webgl ? ' [GL2 YUV]' : ' [2D YUV]'), dx, dy + 140);
+        ctx.fillText(`AFL ${this.#buffer.audio.lastFrameLength}`, dx, dy + 160);
+
+        barPlot(ctx, this.#buffer.fetchTimes.map((v, i) => [i, v]), dx + dw - 200, dy + dh - 120, 200, 100);
+        barPlot(ctx, this.#diag.latencies.map((v, i) => [i, [v]]), dx + dw - 200, dy, 200, 100);
     }
 
     #startClockLoop() {

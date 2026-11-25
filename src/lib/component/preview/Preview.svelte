@@ -37,7 +37,6 @@
   let boxes = $state<LineBox[]>([]);
 
   let volumePopup: Popup;
-  let speedPopup: Popup;
 
   let canvas: HTMLCanvasElement;
   let overlay = $state<HTMLElement>();
@@ -84,18 +83,7 @@
     oninput={(x) => $volume = x.currentTarget.valueAsNumber}/>
 </Popup>
 
-<Popup bind:this={speedPopup} style="padding: 3px; display: flex; flex-direction: column; gap: 2px;">
-  {#each PLAYBACK_RATES as rate (rate)}
-    <button class="speed-option" class:active={$playbackRate === rate}
-      onclick={() => {
-        $playbackRate = rate;
-        speedPopup.close();
-      }}
-    >
-      {rate}x
-    </button>
-  {/each}
-</Popup>
+
 
 <div class="vlayout fill area"
   class:focused={$uiFocus == 'Preview'}
@@ -135,17 +123,17 @@
     }} disabled={$loadState !== 'loaded'}>
       <Volume2Icon />
     </button>
-    <button class="speed-btn"
+    <select class="speed-select"
       aria-label={$_('preview.playback-speed')}
       title={$_('preview.playback-speed')}
       disabled={$loadState !== 'loaded'}
-      onclick={(e) => {
-        const self = e.currentTarget;
-        const rect = self.getBoundingClientRect();
-        speedPopup.openAt(rect.left, rect.bottom, 64);
-      }}>
-      {$playbackRate}x
-    </button>
+      value={$playbackRate}
+      onchange={(e) => $playbackRate = Number(e.currentTarget.value)}
+    >
+      {#each PLAYBACK_RATES as rate (rate)}
+        <option value={rate}>{rate}x</option>
+      {/each}
+    </select>
     <TimestampInput bind:timestamp={playPosInput}
       tight={true}
       disabled={$loadState !== 'loaded'}
@@ -201,21 +189,7 @@ canvas {
   }
 }
 
-.speed-btn {
-  font-size: 85%;
-  padding: 0 5px;
-  min-width: 3.1em;
+.speed-select {
   font-variant-numeric: tabular-nums;
-}
-
-.speed-option {
-  font-size: 90%;
-  padding: 2px 6px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-
-  &.active {
-    font-weight: bold;
-  }
 }
 </style>
