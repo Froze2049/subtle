@@ -41,6 +41,7 @@ import { JSONSubtitles } from '../lib/core/JSON.svelte';
 import { HTMLString } from '../lib/core/formats/SRT_HTML';
 import { AlignMode } from '../lib/core/Labels';
 import { RichText } from '../lib/core/RichText';
+import { SubtitleEntry } from '../lib/core/Subtitles.svelte';
 import { WrapStyle } from '../lib/details/TextLayout';
 import { fromRichText, RichTextSchema, toRichText } from '../lib/component/richedit/Schema';
 
@@ -402,7 +403,17 @@ Dialogue: 2,0:00:00.08,0:00:02.64,ZH_NOTE,,0,0,0,,注释
         expect(messages).toEqual([]);
         expect(subs.metadata.ycbcrMatrix).toBe('TV.709');
         expect(subs.styles.every((s) => s.wrapStyle === WrapStyle.NoWrap)).toBe(true);
-        expect(subs.entries.map((e) => e.layer)).toEqual([0, 1, 2]);
+        const byName = new Map(subs.styles.map((s) => [s.name, s]));
+        expect(byName.get('EN_HOST')!.defaultLayer).toBe(0);
+        expect(byName.get('ZH_HOST')!.defaultLayer).toBe(1);
+        expect(byName.get('ZH_NOTE')!.defaultLayer).toBe(2);
+        expect(subs.entries.map((e) => e.getLayer([...e.texts.keys()][0]))).toEqual([0, 1, 2]);
+
+        // New multi-channel entry (e.g. created via '+' button) inherits each style's defaultLayer
+        const combined = new SubtitleEntry(3, 5);
+        combined.texts.set(byName.get('ZH_HOST')!, '爱德华派！');
+        combined.texts.set(byName.get('EN_HOST')!, 'Team Edward');
+        subs.entries.push(combined);
 
         const exportedASS = new ASSWriter(subs).toString();
         expect(exportedASS).toContain('YCbCr Matrix: TV.709');
@@ -411,27 +422,37 @@ Dialogue: 2,0:00:00.08,0:00:02.64,ZH_NOTE,,0,0,0,,注释
         expect(exportedASS).toContain('Dialogue: 0,00:00:00.08,00:00:02.64,EN_HOST,,0,0,0,,Hello');
         expect(exportedASS).toContain('Dialogue: 1,00:00:00.08,00:00:02.64,ZH_HOST,,0,0,0,,你好');
         expect(exportedASS).toContain('Dialogue: 2,00:00:00.08,00:00:02.64,ZH_NOTE,,0,0,0,,注释');
+        expect(exportedASS).toContain('Dialogue: 1,00:00:03.00,00:00:05.00,ZH_HOST,,0,0,0,,爱德华派！');
+        expect(exportedASS).toContain('Dialogue: 0,00:00:03.00,00:00:05.00,EN_HOST,,0,0,0,,Team Edward');
 
         // JSON project round-trip
         const savedJSON = JSONSubtitles.write(subs).toString();
         const loaded = JSONSubtitles.parse(savedJSON).decode();
         expect(loaded.subs.metadata.ycbcrMatrix).toBe('TV.709');
         expect(loaded.subs.styles.every((s) => s.wrapStyle === WrapStyle.NoWrap)).toBe(true);
-        expect(loaded.subs.entries.map((e) => e.layer)).toEqual([0, 1, 2]);
+        const loadedByName = new Map(loaded.subs.styles.map((s) => [s.name, s]));
+        expect(loadedByName.get('ZH_HOST')!.defaultLayer).toBe(1);
+        expect(loaded.subs.entries.slice(0, 3).map((e) => e.getLayer([...e.texts.keys()][0]))).toEqual([0, 1, 2]);
+        expect(loaded.subs.entries[3].getLayer(loadedByName.get('ZH_HOST')!)).toBe(1);
+        expect(loaded.subs.entries[3].getLayer(loadedByName.get('EN_HOST')!)).toBe(0);
     });
 
     it('defaults missing YCbCr Matrix to None and missing Layer in legacy JSON to 0', () => {
         const { subs } = new ASSParser(BILINGUAL_SAMPLE).decode();
         expect(subs.metadata.ycbcrMatrix).toBe('TV.709');
-        expect(subs.entries.map((e) => e.layer)).toEqual([0, 1, 0, 1, 2]);
+        expect(subs.entries.map((e) => e.getLayer([...e.texts.keys()][0]))).toEqual([0, 1, 0, 1, 2]);
 
         const saved = JSON.parse(JSONSubtitles.write(subs).toString());
         delete saved.metadata.ycbcrMatrix;
-        for (const entry of saved.entries) delete entry.layer;
+        for (const style of saved.styles) delete style.defaultLayer;
+        for (const entry of saved.entries) {
+            delete entry.layer;
+            delete entry.layers;
+        }
 
         const loaded = JSONSubtitles.parse(JSON.stringify(saved)).decode();
         expect(loaded.subs.metadata.ycbcrMatrix).toBe('None');
-        expect(loaded.subs.entries.every((e) => e.layer === 0)).toBe(true);
+        expect(loaded.subs.entries.every((e) => e.getLayer([...e.texts.keys()][0]) === 0)).toBe(true);
     });
 
     it('defines parseDOM rules on RichTextSchema font and changeSize marks so IME DOM re-reads preserve marks', () => {
