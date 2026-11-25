@@ -37,9 +37,11 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 
 import { ASSParser, ASSWriter, fromASSColor, toASSColor } from '../lib/core/formats/ASS.svelte';
 import { ASSString } from '../lib/core/formats/ASSString';
+import { JSONSubtitles } from '../lib/core/JSON.svelte';
 import { HTMLString } from '../lib/core/formats/SRT_HTML';
 import { AlignMode } from '../lib/core/Labels';
 import { RichText } from '../lib/core/RichText';
+import { WrapStyle } from '../lib/details/TextLayout';
 import { fromRichText, toRichText } from '../lib/component/richedit/Schema';
 
 const BILINGUAL_SAMPLE = `[Script Info]
@@ -354,21 +356,81 @@ Dialogue: 0,0:00:01.00,0:00:02.00,ZH_HOST,,0,0,0,,测试{\\rMISSING_STYLE}文本
         const { subs } = new ASSParser(INLINE_STYLE_SAMPLE).decode();
         const exported = new ASSWriter(subs).toString();
 
+        expect(exported).toContain('WrapStyle: 2');
+        expect(exported).not.toContain('{\\q2}');
         expect(exported).toContain(
-            'Dialogue: 0,00:00:27.87,00:00:31.15,ZH_HOST,,0,0,0,,曾是个百无聊赖的摩门教主妇 {\\rZH_HOST_LATIN}2003{\\r}年{\\rZH_HOST_LATIN}6{\\r}月{\\rZH_HOST_LATIN}2{\\r}日'
+            'Dialogue: 1,00:00:27.87,00:00:31.15,ZH_HOST,,0,0,0,,曾是个百无聊赖的摩门教主妇 {\\rZH_HOST_LATIN}2003{\\r}年{\\rZH_HOST_LATIN}6{\\r}月{\\rZH_HOST_LATIN}2{\\r}日'
         );
         expect(exported).toContain(
-            'Dialogue: 0,00:01:46.86,00:01:48.06,ZH_CLIP,,0,0,0,,我代表{\\rZH_CLIP_LATIN}ABC{\\r}新闻全体同仁'
+            'Dialogue: 1,00:01:46.86,00:01:48.06,ZH_CLIP,,0,0,0,,我代表{\\rZH_CLIP_LATIN}ABC{\\r}新闻全体同仁'
         );
         expect(exported).toContain(
-            'Dialogue: 0,00:08:51.29,00:08:56.45,ZH_NOTE,,0,0,0,,{\\rZH_NOTE_LATIN}[CinemaSins]:{\\r} 美国知名影评频道'
+            'Dialogue: 2,00:08:51.29,00:08:56.45,ZH_NOTE,,0,0,0,,{\\rZH_NOTE_LATIN}[CinemaSins]:{\\r} 美国知名影评频道'
         );
         expect(exported).toContain(
-            'Dialogue: 0,00:09:00.00,00:09:02.00,ZH_HOST,,0,0,0,,前段{\\rEMPHASIS}重点{\\r}后段'
+            'Dialogue: 1,00:09:00.00,00:09:02.00,ZH_HOST,,0,0,0,,前段{\\rEMPHASIS}重点{\\r}后段'
         );
 
         // Re-parse the exported ASS to confirm lossless round-trip with 0 warnings
         const reparsed = new ASSParser(exported).decode();
         expect(reparsed.messages).toEqual([]);
+    });
+});
+
+describe('ASS WrapStyle, Layer, and YCbCr Matrix round-trip', () => {
+    it('preserves WrapStyle: 2, YCbCr Matrix: TV.709, and Layer 0/1/2 across ASS and JSON round-trips', () => {
+        const sample = `[Script Info]
+ScriptType: v4.00+
+WrapStyle: 2
+YCbCr Matrix: TV.709
+PlayResX: 1920
+PlayResY: 1080
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: EN_HOST,Arial,51,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,0,0,0,0,100,100,0,0,1,3.6,0,2,135,135,83,1
+Style: ZH_HOST,GenRyuMin2 TW,72,&H00FFFFFF,&H000000FF,&H00000000,&HFF000000,-1,0,0,0,100,100,0,0,1,3.8,0,2,135,135,142,1
+Style: ZH_NOTE,GenRyuMin2 TW,42,&H00FFFFFF,&H000000FF,&H00393939,&HFF000000,-1,0,0,0,100,100,0,0,1,2.5,0,2,135,135,24,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.08,0:00:02.64,EN_HOST,,0,0,0,,Hello
+Dialogue: 1,0:00:00.08,0:00:02.64,ZH_HOST,,0,0,0,,你好
+Dialogue: 2,0:00:00.08,0:00:02.64,ZH_NOTE,,0,0,0,,注释
+`;
+        const { subs, messages } = new ASSParser(sample).decode();
+        expect(messages).toEqual([]);
+        expect(subs.metadata.ycbcrMatrix).toBe('TV.709');
+        expect(subs.styles.every((s) => s.wrapStyle === WrapStyle.NoWrap)).toBe(true);
+        expect(subs.entries.map((e) => e.layer)).toEqual([0, 1, 2]);
+
+        const exportedASS = new ASSWriter(subs).toString();
+        expect(exportedASS).toContain('YCbCr Matrix: TV.709');
+        expect(exportedASS).toContain('WrapStyle: 2');
+        expect(exportedASS).not.toContain('{\\q2}');
+        expect(exportedASS).toContain('Dialogue: 0,00:00:00.08,00:00:02.64,EN_HOST,,0,0,0,,Hello');
+        expect(exportedASS).toContain('Dialogue: 1,00:00:00.08,00:00:02.64,ZH_HOST,,0,0,0,,你好');
+        expect(exportedASS).toContain('Dialogue: 2,00:00:00.08,00:00:02.64,ZH_NOTE,,0,0,0,,注释');
+
+        // JSON project round-trip
+        const savedJSON = JSONSubtitles.write(subs).toString();
+        const loaded = JSONSubtitles.parse(savedJSON).decode();
+        expect(loaded.subs.metadata.ycbcrMatrix).toBe('TV.709');
+        expect(loaded.subs.styles.every((s) => s.wrapStyle === WrapStyle.NoWrap)).toBe(true);
+        expect(loaded.subs.entries.map((e) => e.layer)).toEqual([0, 1, 2]);
+    });
+
+    it('defaults missing YCbCr Matrix to None and missing Layer in legacy JSON to 0', () => {
+        const { subs } = new ASSParser(BILINGUAL_SAMPLE).decode();
+        expect(subs.metadata.ycbcrMatrix).toBe('TV.709');
+        expect(subs.entries.map((e) => e.layer)).toEqual([0, 1, 0, 1, 2]);
+
+        const saved = JSON.parse(JSONSubtitles.write(subs).toString());
+        delete saved.metadata.ycbcrMatrix;
+        for (const entry of saved.entries) delete entry.layer;
+
+        const loaded = JSONSubtitles.parse(JSON.stringify(saved)).decode();
+        expect(loaded.subs.metadata.ycbcrMatrix).toBe('None');
+        expect(loaded.subs.entries.every((e) => e.layer === 0)).toBe(true);
     });
 });
