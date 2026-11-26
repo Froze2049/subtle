@@ -18,27 +18,76 @@ export type ReferenceRow = {
 };
 
 interface Props {
-  rows: ReferenceRow[];
+  rows: readonly ReferenceRow[];
   showStyle: boolean;
   autoFollow?: boolean;
 }
 
+const OVERSCAN = 8;
+
 let { rows, showStyle, autoFollow = $bindable(true) }: Props = $props();
 
-let currentTime = $state(Playback.position);
-let rowElements: (HTMLTableRowElement | undefined)[] = [];
+let containerEl = $state<HTMLDivElement>();
+let scrollTop = $state(0);
+let viewportHeight = $state(400);
+
+// Only mutate reactive active state when the active row set or primary index actually changes,
+// so 60/120Hz Playback.onPositionChanged updates do ZERO Svelte reactivity or DOM work during steady playback.
+let activeIndices = $state.raw<ReadonlySet<number>>(new Set());
+let primaryIndex = $state(-1);
 let lastScrolledIndex = -1;
 
-// Binary search for the first row with start <= t, then scan nearby active rows.
-// Also tracks the latest row that has started if playback is in a gap between rows.
-const activeState = $derived.by(() => {
-  const active = new Set<number>();
-  if (rows.length === 0) return { active, primaryIndex: -1 };
+// Precompute estimated vertical offsets for virtual scrolling so only ~25-40 visible rows exist in the DOM.
+const layout = $derived.by(() => {
+  const n = rows.length;
+  const offsets = new Float64Array(n + 1);
+  let y = 0;
+  for (let i = 0; i < n; i++) {
+    offsets[i] = y;
+    const text = rows[i].text;
+    const explicitLines = text.split('\n').length;
+    const wrappedLines = Math.max(explicitLines, Math.ceil(text.length / 36));
+    y += Math.max(40, 14 + wrappedLines * 20);
+  }
+  offsets[n] = y;
+  return { offsets, totalHeight: y };
+});
 
-  const t = currentTime;
-  // Find rightmost index with rows[i].start <= t
+function findIndexAtOffset(offsets: Float64Array, targetY: number): number {
+  const n = offsets.length - 1;
+  if (n <= 0) return 0;
   let lo = 0;
-  let hi = rows.length - 1;
+  let hi = n - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (offsets[mid + 1] <= targetY) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+const visibleRange = $derived.by(() => {
+  const n = rows.length;
+  if (n === 0) return { start: 0, end: 0, topOffset: 0 };
+  const first = findIndexAtOffset(layout.offsets, scrollTop);
+  const last = findIndexAtOffset(layout.offsets, scrollTop + viewportHeight);
+  const start = Math.max(0, first - OVERSCAN);
+  const end = Math.min(n, last + OVERSCAN + 1);
+  return { start, end, topOffset: layout.offsets[start] };
+});
+
+const visibleRows = $derived(rows.slice(visibleRange.start, visibleRange.end));
+
+function computeActiveAt(t: number): { active: Set<number>, primary: number } {
+  const active = new Set<number>();
+  const n = rows.length;
+  if (n === 0) return { active, primary: -1 };
+
+  let lo = 0;
+  let hi = n - 1;
   let rightMost = -1;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
@@ -51,7 +100,6 @@ const activeState = $derived.by(() => {
   }
 
   let firstActive = -1;
-  // Scan backwards from rightMost to catch overlapping entries (e.g. bilingual tracks)
   for (let i = rightMost; i >= 0; i--) {
     const r = rows[i];
     if (r.end > t) {
@@ -64,36 +112,150 @@ const activeState = $derived.by(() => {
 
   return {
     active,
-    primaryIndex: firstActive >= 0 ? firstActive : rightMost,
+    primary: firstActive >= 0 ? firstActive : rightMost,
   };
-});
+}
+
+function setsEqual(a: ReadonlySet<number>, b: ReadonlySet<number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const x of a) {
+    if (!b.has(x)) return false;
+  }
+  return true;
+}
+
+function syncPosition(t: number) {
+  const { active, primary } = computeActiveAt(t);
+  if (primary !== primaryIndex) {
+    primaryIndex = primary;
+  }
+  if (!setsEqual(active, activeIndices)) {
+    activeIndices = active;
+  }
+}
 
 $effect(() => {
-  // Reset scroll tracker whenever the reference subtitle list changes
+  // Re-sync whenever the active reference document changes
   void rows;
   lastScrolledIndex = -1;
+  syncPosition(Playback.position);
 });
 
+let animRaf = 0;
+function cancelScrollAnimation() {
+  if (animRaf) {
+    cancelAnimationFrame(animRaf);
+    animRaf = 0;
+  }
+}
+
+function animateScrollTo(targetTop: number, durationMs = 240) {
+  if (!containerEl) return;
+  cancelScrollAnimation();
+
+  const maxScroll = Math.max(0, containerEl.scrollHeight - containerEl.clientHeight);
+  const clampedTarget = Math.min(maxScroll, Math.max(0, targetTop));
+  const startTop = containerEl.scrollTop;
+  const diff = clampedTarget - startTop;
+  if (Math.abs(diff) < 2) return;
+
+  // Instant jump for large seeks (e.g. scrubbing across the timeline)
+  if (Math.abs(diff) >= viewportHeight * 1.5 || durationMs <= 0) {
+    containerEl.scrollTop = clampedTarget;
+    scrollTop = containerEl.scrollTop;
+    return;
+  }
+
+  const startTime = performance.now();
+  const step = (now: number) => {
+    if (!containerEl) {
+      animRaf = 0;
+      return;
+    }
+    const t = Math.min(1, (now - startTime) / durationMs);
+    const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
+    containerEl.scrollTop = startTop + diff * eased;
+    scrollTop = containerEl.scrollTop;
+    if (t < 1) {
+      animRaf = requestAnimationFrame(step);
+    } else {
+      animRaf = 0;
+    }
+  };
+  animRaf = requestAnimationFrame(step);
+}
+
 $effect(() => {
-  const idx = activeState.primaryIndex;
-  if (!autoFollow || idx < 0 || idx === lastScrolledIndex) return;
+  const idx = primaryIndex;
+  if (!autoFollow || idx < 0 || idx === lastScrolledIndex || !containerEl) return;
   lastScrolledIndex = idx;
+
+  // If the target row is already mounted in the virtual window (true for sequential playback),
+  // compute its exact position directly and glide smoothly without a two-step jump.
+  const mountedRow = containerEl.querySelector<HTMLElement>(`[data-row-index="${idx}"]`);
+  if (mountedRow) {
+    const containerRect = containerEl.getBoundingClientRect();
+    const rowRect = mountedRow.getBoundingClientRect();
+    const relTop = rowRect.top - containerRect.top;
+    const comfortTop = containerRect.height * 0.22;
+    const comfortBottom = containerRect.height * 0.52;
+    if (relTop >= comfortTop && relTop <= comfortBottom) return;
+
+    const desiredTop = containerRect.height * 0.36;
+    animateScrollTo(containerEl.scrollTop + (relTop - desiredTop), 240);
+    return;
+  }
+
+  // Row is outside the current virtual window (e.g. after seeking): jump near it, then align once mounted.
+  const estimatedTop = Math.max(0, layout.offsets[idx] - viewportHeight * 0.36);
+  cancelScrollAnimation();
+  containerEl.scrollTop = estimatedTop;
+  scrollTop = containerEl.scrollTop;
+
   void tick().then(() => {
-    const el = rowElements[idx];
-    if (el) {
-      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    if (!containerEl) return;
+    const rowEl = containerEl.querySelector<HTMLElement>(`[data-row-index="${idx}"]`);
+    if (!rowEl) return;
+    const containerRect = containerEl.getBoundingClientRect();
+    const rowRect = rowEl.getBoundingClientRect();
+    const delta = (rowRect.top - containerRect.top) - containerRect.height * 0.36;
+    if (Math.abs(delta) > 16) {
+      containerEl.scrollTop = Math.max(0, containerEl.scrollTop + delta);
+      scrollTop = containerEl.scrollTop;
     }
   });
 });
 
+let scrollRaf = 0;
+function onScroll() {
+  if (!containerEl || scrollRaf) return;
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = 0;
+    if (containerEl) scrollTop = containerEl.scrollTop;
+  });
+}
+
 onMount(() => {
   const me = {};
-  currentTime = Playback.position;
+  syncPosition(Playback.position);
   Playback.onPositionChanged.bind(me, (pos) => {
-    currentTime = pos;
+    syncPosition(pos);
   });
+
+  let ro: ResizeObserver | undefined;
+  if (containerEl) {
+    viewportHeight = containerEl.clientHeight || 400;
+    ro = new ResizeObserver(() => {
+      if (containerEl) viewportHeight = containerEl.clientHeight || 400;
+    });
+    ro.observe(containerEl);
+  }
+
   return () => {
     EventHost.unbind(me);
+    ro?.disconnect();
+    cancelScrollAnimation();
+    if (scrollRaf) cancelAnimationFrame(scrollRaf);
   };
 });
 
@@ -108,31 +270,42 @@ async function seekToRow(start: number) {
 }
 </script>
 
-<div class="ref-table-container area">
+<div
+  bind:this={containerEl}
+  class="ref-table-container area"
+  role="table"
+  onscroll={onScroll}
+  onwheel={cancelScrollAnimation}
+  onpointerdown={cancelScrollAnimation}
+>
   {#if rows.length === 0}
     <div class="empty-hint">{$_('table.reference-empty')}</div>
   {:else}
-    <table class="ref-table">
-      <tbody>
-        {#each rows as row, i (row.id)}
-          {@const isActive = activeState.active.has(i)}
-          <tr
-            bind:this={rowElements[i]}
+    <div class="virtual-spacer" style="height: {layout.totalHeight}px;">
+      <div class="virtual-window" style="transform: translateY({visibleRange.topOffset}px);">
+        {#each visibleRows as row, offset (row.id)}
+          {@const idx = visibleRange.start + offset}
+          {@const isActive = activeIndices.has(idx)}
+          <div
+            class="ref-row"
             class:active={isActive}
+            role="row"
+            tabindex="-1"
+            data-row-index={idx}
             title={$_('table.jump-to-line-hint')}
             ondblclick={() => void seekToRow(row.start)}
           >
-            <td class="time-col">
+            <div class="time-col">
               <div class="time-start">{Basic.formatTimestamp(row.start, 2)}</div>
               <div class="time-end">{Basic.formatTimestamp(row.end, 2)}</div>
-            </td>
+            </div>
             {#if showStyle}
-              <td class="style-col">
+              <div class="style-col">
                 <span class="style-badge" title={row.styleName}>{row.styleName}</span>
-              </td>
+              </div>
             {/if}
-            <td class="text-col">{row.text}</td>
-            <td class="action-col">
+            <div class="text-col">{row.text}</div>
+            <div class="action-col">
               <button
                 type="button"
                 class="copy-btn"
@@ -145,11 +318,11 @@ async function seekToRow(start: number) {
               >
                 <CopyIcon size={13} />
               </button>
-            </td>
-          </tr>
+            </div>
+          </div>
         {/each}
-      </tbody>
-    </table>
+      </div>
+    </div>
   {/if}
 </div>
 
@@ -179,41 +352,50 @@ async function seekToRow(start: number) {
   font-style: italic;
 }
 
-.ref-table {
+.virtual-spacer {
+  position: relative;
   width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
+}
+
+.virtual-window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  will-change: transform;
+}
+
+.ref-row {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 4px 6px;
   font-size: var(--fontSize);
+  border-bottom: 1px solid var(--uchu-gray-2);
+  cursor: default;
+  contain: layout style;
+  transition: background-color 140ms ease;
 
-  tr {
-    border-bottom: 1px solid var(--uchu-gray-2);
-    cursor: default;
-
-    @media (prefers-color-scheme: dark) {
-      border-bottom-color: var(--uchu-yin-8);
-    }
-
-    &:hover {
-      background-color: rgba(128, 128, 128, 0.08);
-    }
-
-    &.active {
-      background-color: rgba(59, 130, 246, 0.16);
-
-      @media (prefers-color-scheme: dark) {
-        background-color: rgba(96, 165, 250, 0.24);
-      }
-    }
+  @media (prefers-color-scheme: dark) {
+    border-bottom-color: var(--uchu-yin-8);
   }
 
-  td {
-    padding: 4px 6px;
-    vertical-align: top;
+  &:hover {
+    background-color: rgba(128, 128, 128, 0.08);
+  }
+
+  &.active {
+    background-color: rgba(59, 130, 246, 0.16);
+
+    @media (prefers-color-scheme: dark) {
+      background-color: rgba(96, 165, 250, 0.24);
+    }
   }
 }
 
 .time-col {
-  width: 82px;
+  flex: 0 0 82px;
   font-family: var(--monospaceFontFamily);
   font-variant-numeric: tabular-nums;
   font-size: 0.85em;
@@ -227,7 +409,7 @@ async function seekToRow(start: number) {
 }
 
 .style-col {
-  width: 96px;
+  flex: 0 0 92px;
   overflow: hidden;
 }
 
@@ -244,6 +426,8 @@ async function seekToRow(start: number) {
 }
 
 .text-col {
+  flex: 1 1 auto;
+  min-width: 0;
   word-break: break-word;
   white-space: pre-wrap;
   font-family: var(--editorFontFamily);
@@ -252,9 +436,8 @@ async function seekToRow(start: number) {
 }
 
 .action-col {
-  width: 28px;
+  flex: 0 0 24px;
   text-align: right;
-  padding-right: 4px !important;
 }
 
 .copy-btn {
@@ -265,8 +448,8 @@ async function seekToRow(start: number) {
   background: transparent;
   box-shadow: none;
 
-  tr:hover &,
-  tr.active & {
+  .ref-row:hover &,
+  .ref-row.active & {
     opacity: 0.85;
   }
 

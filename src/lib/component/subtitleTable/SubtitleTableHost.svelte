@@ -14,13 +14,14 @@ type ReferenceDoc = {
   name: string;
   path: string;
   showStyle: boolean;
-  rows: ReferenceRow[];
+  rows: readonly ReferenceRow[];
 };
 
 const MAIN_ID = '__main__';
 const ADD_ID = '__add__';
 
-let refs = $state<ReferenceDoc[]>([]);
+// Use $state.raw so thousands of ReferenceRow objects are not wrapped in deep Svelte proxies.
+let refs = $state.raw<ReferenceDoc[]>([]);
 let activeId = $state<string>(MAIN_ID);
 let autoFollow = $state(true);
 let selectEl = $state<HTMLSelectElement>();
@@ -55,6 +56,7 @@ async function addReferenceSubtitles() {
   const paths = await Interface.askOpenFiles();
   if (paths.length === 0) return;
 
+  const nextRefs = [...refs];
   let lastLoadedId: string | null = null;
   for (const filePath of paths) {
     const subs = await Interface.parseSubtitleSourceInteractive(filePath, true);
@@ -62,19 +64,19 @@ async function addReferenceSubtitles() {
 
     const { rows, showStyle } = buildReferenceRows(subs);
     const name = Basic.getFilename(filePath) ?? filePath;
-    const existing = refs.find((r) => r.path === filePath);
-    if (existing) {
-      existing.rows = rows;
-      existing.showStyle = showStyle;
-      existing.name = name;
+    const existingIdx = nextRefs.findIndex((r) => r.path === filePath);
+    if (existingIdx >= 0) {
+      const existing = nextRefs[existingIdx];
+      nextRefs[existingIdx] = { ...existing, name, showStyle, rows };
       lastLoadedId = existing.id;
     } else {
       const id = crypto.randomUUID();
-      refs.push({ id, name, path: filePath, showStyle, rows });
+      nextRefs.push({ id, name, path: filePath, showStyle, rows });
       lastLoadedId = id;
     }
   }
 
+  refs = nextRefs;
   if (lastLoadedId) {
     activeId = lastLoadedId;
   }
@@ -84,7 +86,6 @@ async function onSelectChange(ev: Event) {
   const select = ev.currentTarget as HTMLSelectElement;
   const next = select.value;
   if (next === ADD_ID) {
-    // Restore immediately so canceling the dialog doesn't leave "+ Add..." selected
     select.value = activeId;
     await addReferenceSubtitles();
     if (selectEl) selectEl.value = activeId;
@@ -96,11 +97,12 @@ async function onSelectChange(ev: Event) {
 function removeActiveRef() {
   const idx = refs.findIndex((r) => r.id === activeId);
   if (idx < 0) return;
-  refs.splice(idx, 1);
-  if (refs.length === 0) {
+  const nextRefs = refs.toSpliced(idx, 1);
+  refs = nextRefs;
+  if (nextRefs.length === 0) {
     activeId = MAIN_ID;
   } else {
-    activeId = refs[Math.min(idx, refs.length - 1)].id;
+    activeId = nextRefs[Math.min(idx, nextRefs.length - 1)].id;
   }
 }
 </script>
