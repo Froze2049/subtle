@@ -978,8 +978,16 @@
   },
   "table": {
     "add-column": "新增欄",
+    "add-reference-subtitle": "+ 新增參考字幕…",
+    "copy-line": "複製文字",
     "edit-columns": "編輯欄",
+    "follow-playback": "跟隨播放",
+    "jump-to-line-hint": "雙擊跳轉到此行時間",
     "lint-messages": "拼寫檢查報告：",
+    "main-subtitle": "主字幕",
+    "reference-empty": "此參考字幕不包含任何項目",
+    "reference-entry-count": "{n} 條",
+    "remove-reference-subtitle": "移除目前參考字幕",
     "requirement-not-met": "未滿足條件：",
     "show-hidden-channels": "顯示隱藏的頻道"
   },

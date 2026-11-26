@@ -189,6 +189,13 @@ export const Interface = {
         return path;
     },
 
+    async askOpenFiles() {
+        const selected = await dialog.open({multiple: true, filters: IMPORT_FILTERS()});
+        if (Array.isArray(selected)) return selected;
+        if (typeof selected == 'string') return [selected];
+        return [];
+    },
+
     async askOpenVideo() {
         const selected = await dialog.open({multiple: false,
             filters: [

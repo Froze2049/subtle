@@ -21,7 +21,7 @@ MainConfig.addGroup('table', TableConfig);
 
 import { initWindowMenu } from '$lib/WindowMenu';
 import EntryEdit from '$lib/EntryEdit.svelte';
-import SubtitleTable from '$lib/component/subtitleTable/SubtitleTable.svelte';
+import SubtitleTableHost from '$lib/component/subtitleTable/SubtitleTableHost.svelte';
 import Timeline from '$lib/component/timeline/Timeline.svelte';
 import Preview from '$lib/component/preview/Preview.svelte';
 
@@ -468,8 +468,8 @@ observer.observe({ type: 'paint', buffered: true });
       <!-- resizer -->
       <div><Resizer first={editTable} minValue={125} /></div>
       <!-- table view -->
-      <div class='flexgrow isolated' style="padding-bottom: 6px">
-        <SubtitleTable />
+      <div class='flexgrow isolated fixminheight' style="padding-bottom: 6px">
+        <SubtitleTableHost />
       </div>
     </div>
   </div>

@@ -980,8 +980,16 @@
   },
   "table": {
     "add-column": "add column",
+    "add-reference-subtitle": "+ Add reference subtitle…",
+    "copy-line": "Copy text",
     "edit-columns": "edit columns",
+    "follow-playback": "Follow playback",
+    "jump-to-line-hint": "Double-click to seek to this line",
     "lint-messages": "Lint message{n,plural,one{} other{s}}:",
+    "main-subtitle": "Main subtitles",
+    "reference-empty": "This reference subtitle has no entries",
+    "reference-entry-count": "{n} {n,plural,one{line} other{lines}}",
+    "remove-reference-subtitle": "Remove reference subtitle",
     "requirement-not-met": "Requirement{n,plural,one{} other{s}} not met:",
     "show-hidden-channels": "show hidden channels"
   },

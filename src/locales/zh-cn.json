@@ -987,8 +987,16 @@
   },
   "table": {
     "add-column": "添加列",
+    "add-reference-subtitle": "+ 添加参考字幕…",
+    "copy-line": "复制文本",
     "edit-columns": "编辑列",
+    "follow-playback": "跟随播放",
+    "jump-to-line-hint": "双击跳转到该行时间",
     "lint-messages": "拼写检查报告：",
+    "main-subtitle": "主字幕",
+    "reference-empty": "该参考字幕不包含任何条目",
+    "reference-entry-count": "{n} 条",
+    "remove-reference-subtitle": "移除当前参考字幕",
     "requirement-not-met": "未满足条件：",
     "show-hidden-channels": "显示隐藏的频道"
   },
